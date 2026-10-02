@@ -9,5 +9,6 @@ public enum EngineSelection
 {
     Auto,
     Publisher,
-    LibreOffice
+    LibreOffice,
+    Scribus
 }

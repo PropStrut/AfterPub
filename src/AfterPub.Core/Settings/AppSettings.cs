@@ -30,12 +30,17 @@ public sealed class AppSettings
     /// </summary>
     public string? LibreOfficePath { get; set; }
 
+    /// <summary>
+    /// An explicit path to Scribus.exe, if the user set one. Optional — when empty,
+    /// only the standard install locations are checked.
+    /// </summary>
+    public string? ScribusPath { get; set; }
+
     /// <summary>What to do when converting a file whose output already exists.</summary>
     public OverwriteBehavior OverwriteBehavior { get; set; } = OverwriteBehavior.Ask;
 
     /// <summary>
     /// Which output types to scan for and produce. PDF-only by default; ODG needs
-    /// LibreOffice and is off by default (CLAUDE.md section 3.2).
-    /// </summary>
+    /// LibreOffice and SLA needs Scribus, so both are off by default (CLAUDE.md section 3.2).
     public List<OutputTarget> EnabledTargets { get; set; } = new List<OutputTarget> { OutputTarget.Pdf };
 }

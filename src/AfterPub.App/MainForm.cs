@@ -38,9 +38,13 @@ public class MainForm : Form
     private readonly RadioButton _autoEngineRadio;
     private readonly RadioButton _publisherEngineRadio;
     private readonly RadioButton _libreOfficeEngineRadio;
+    private readonly RadioButton _scribusEngineRadio;
     private readonly Label _libreOfficePathLabel;
     private readonly TextBox _libreOfficePathTextBox;
     private readonly Button _libreOfficePathBrowseButton;
+    private readonly Label _scribusPathLabel;
+    private readonly TextBox _scribusPathTextBox;
+    private readonly Button _scribusPathBrowseButton;
     private readonly Label _engineStatusLabel;
 
     private readonly Button _convertButton;
@@ -56,8 +60,8 @@ public class MainForm : Form
 
         this.Text = "AfterPub";
         this.Width = 900;
-        this.Height = 780;
-        this.MinimumSize = new Size(700, 680);
+        this.Height = 800;
+        this.MinimumSize = new Size(700, 724);
 
         // --- Row 1: source folder, recursive, scan ---
 
@@ -193,13 +197,13 @@ public class MainForm : Form
             Left = 10,
             Top = 208,
             Width = 860,
-            Height = 120,
+            Height = 164,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         };
 
         this._autoEngineRadio = new RadioButton
         {
-            Text = "Auto (Publisher if available, otherwise LibreOffice)",
+            Text = "Auto (Publisher, then LibreOffice, then Scribus)",
             Left = 10,
             Top = 20,
             Width = 400,
@@ -218,6 +222,14 @@ public class MainForm : Form
         {
             Text = "LibreOffice",
             Left = 160,
+            Top = 44,
+            Width = 140
+        };
+
+        this._scribusEngineRadio = new RadioButton
+        {
+            Text = "Scribus",
+            Left = 310,
             Top = 44,
             Width = 140
         };
@@ -248,12 +260,40 @@ public class MainForm : Form
         };
         this._libreOfficePathBrowseButton.Click += this.OnBrowseLibreOfficePathClick;
 
+        this._scribusPathLabel = new Label
+        {
+            Text = "Scribus path (optional):",
+            Left = 10,
+            Top = 100,
+            Width = 180
+        };
+
+        this._scribusPathTextBox = new TextBox
+        {
+            Left = 200,
+            Top = 97,
+            Width = 550,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+        };
+
+        this._scribusPathBrowseButton = new Button
+        {
+            Text = "Browse...",
+            Left = 760,
+            Top = 95,
+            Width = 90,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right
+        };
+        this._scribusPathBrowseButton.Click += this.OnBrowseScribusPathClick;
+
+        // Two lines: Publisher and LibreOffice on the first, Scribus on the second,
+        // so long install paths do not run off the edge of the window.
         this._engineStatusLabel = new Label
         {
             Left = 10,
-            Top = 96,
+            Top = 126,
             Width = 840,
-            Height = 18,
+            Height = 34,
             ForeColor = SystemColors.GrayText,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         };
@@ -261,9 +301,13 @@ public class MainForm : Form
         this._engineGroup.Controls.Add(this._autoEngineRadio);
         this._engineGroup.Controls.Add(this._publisherEngineRadio);
         this._engineGroup.Controls.Add(this._libreOfficeEngineRadio);
+        this._engineGroup.Controls.Add(this._scribusEngineRadio);
         this._engineGroup.Controls.Add(this._libreOfficePathLabel);
         this._engineGroup.Controls.Add(this._libreOfficePathTextBox);
         this._engineGroup.Controls.Add(this._libreOfficePathBrowseButton);
+        this._engineGroup.Controls.Add(this._scribusPathLabel);
+        this._engineGroup.Controls.Add(this._scribusPathTextBox);
+        this._engineGroup.Controls.Add(this._scribusPathBrowseButton);
         this._engineGroup.Controls.Add(this._engineStatusLabel);
 
         // --- Row 5: convert button ---
@@ -272,7 +316,7 @@ public class MainForm : Form
         {
             Text = "Convert selected",
             Left = 10,
-            Top = 338,
+            Top = 382,
             Width = 160,
             Height = 26
         };
@@ -282,7 +326,7 @@ public class MainForm : Form
         {
             Text = "If output exists:",
             Left = 185,
-            Top = 343,
+            Top = 387,
             Width = 100
         };
 
@@ -290,7 +334,7 @@ public class MainForm : Form
         {
             Text = "Ask",
             Left = 285,
-            Top = 341,
+            Top = 385,
             Width = 55,
             Checked = true
         };
@@ -299,7 +343,7 @@ public class MainForm : Form
         {
             Text = "Skip",
             Left = 345,
-            Top = 341,
+            Top = 385,
             Width = 60
         };
 
@@ -307,7 +351,7 @@ public class MainForm : Form
         {
             Text = "Overwrite",
             Left = 410,
-            Top = 341,
+            Top = 385,
             Width = 90
         };
 
@@ -316,9 +360,9 @@ public class MainForm : Form
         this._resultsGrid = new DataGridView
         {
             Left = 10,
-            Top = 374,
+            Top = 418,
             Width = 860,
-            Height = 330,
+            Height = 306,
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
             ReadOnly = false,
             AllowUserToAddRows = false,
@@ -369,23 +413,23 @@ public class MainForm : Form
         this.FormClosing += this.OnFormClosing;
     }
 
-// F1 opens the About box from anywhere in the window, even while the grid has focus.
-protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-{
-    if (keyData == Keys.F1)
+    // F1 opens the About box from anywhere in the window, even while the grid has focus.
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        ShowAbout();
-        return true;
+        if (keyData == Keys.F1)
+        {
+            this.ShowAbout();
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    return base.ProcessCmdKey(ref msg, keyData);
-}
-
-private void ShowAbout()
-{
-    using AboutForm about = new AboutForm();
-    about.ShowDialog(this);
-}
+    private void ShowAbout()
+    {
+        using AboutForm about = new AboutForm();
+        about.ShowDialog(this);
+    }
 
     private void LoadSettingsIntoControls()
     {
@@ -414,12 +458,16 @@ private void ShowAbout()
             case EngineSelection.LibreOffice:
                 this._libreOfficeEngineRadio.Checked = true;
                 break;
+            case EngineSelection.Scribus:
+                this._scribusEngineRadio.Checked = true;
+                break;
             default:
                 this._autoEngineRadio.Checked = true;
                 break;
         }
 
         this._libreOfficePathTextBox.Text = settings.LibreOfficePath ?? string.Empty;
+        this._scribusPathTextBox.Text = settings.ScribusPath ?? string.Empty;
 
         switch (settings.OverwriteBehavior)
         {
@@ -446,6 +494,7 @@ private void ShowAbout()
             SeparateOutputRoot = this._separateFolderTextBox.Text.Trim(),
             EngineSelection = this.GetSelectedEngineSelection(),
             LibreOfficePath = this._libreOfficePathTextBox.Text.Trim(),
+            ScribusPath = this._scribusPathTextBox.Text.Trim(),
             OverwriteBehavior = this.GetSelectedOverwriteBehavior(),
             EnabledTargets = this.GetSelectedTargets().ToList()
         };
@@ -497,6 +546,11 @@ private void ShowAbout()
             return EngineSelection.LibreOffice;
         }
 
+        if (this._scribusEngineRadio.Checked)
+        {
+            return EngineSelection.Scribus;
+        }
+
         return EngineSelection.Auto;
     }
 
@@ -504,19 +558,32 @@ private void ShowAbout()
     {
         PublisherConversionEngine publisherEngine = new PublisherConversionEngine();
         LibreOfficeConversionEngine libreOfficeEngine = this.CreateLibreOfficeEngine();
+        ScribusConversionEngine scribusEngine = this.CreateScribusEngine();
 
         string publisherStatus = publisherEngine.IsAvailable() ? "found" : "not found";
-        string libreOfficeStatus = libreOfficeEngine.ResolvedExecutablePath is string path
-            ? $"found at {path}"
+        string libreOfficeStatus = libreOfficeEngine.ResolvedExecutablePath is string libreOfficePath
+            ? $"found at {libreOfficePath}"
+            : "not found";
+        string scribusStatus = scribusEngine.ResolvedExecutablePath is string scribusPath
+            ? $"found at {scribusPath}"
             : "not found";
 
-        this._engineStatusLabel.Text = $"Detected — Publisher: {publisherStatus}    LibreOffice: {libreOfficeStatus}";
+        this._engineStatusLabel.Text =
+            $"Detected — Publisher: {publisherStatus}    LibreOffice: {libreOfficeStatus}"
+            + Environment.NewLine
+            + $"Scribus: {scribusStatus}";
     }
 
     private LibreOfficeConversionEngine CreateLibreOfficeEngine()
     {
         string configuredPath = this._libreOfficePathTextBox.Text.Trim();
         return new LibreOfficeConversionEngine(string.IsNullOrEmpty(configuredPath) ? null : configuredPath);
+    }
+
+    private ScribusConversionEngine CreateScribusEngine()
+    {
+        string configuredPath = this._scribusPathTextBox.Text.Trim();
+        return new ScribusConversionEngine(string.IsNullOrEmpty(configuredPath) ? null : configuredPath);
     }
 
     private void OnLocationModeChanged(object? sender, EventArgs e)
@@ -555,6 +622,21 @@ private void ShowAbout()
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             this._libreOfficePathTextBox.Text = dialog.FileName;
+            this.RefreshEngineStatusLabel();
+        }
+    }
+
+    private void OnBrowseScribusPathClick(object? sender, EventArgs e)
+    {
+        using OpenFileDialog dialog = new OpenFileDialog
+        {
+            Filter = "Scribus.exe|Scribus.exe|All files (*.*)|*.*",
+            Title = "Locate Scribus.exe"
+        };
+
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            this._scribusPathTextBox.Text = dialog.FileName;
             this.RefreshEngineStatusLabel();
         }
     }
@@ -687,7 +769,12 @@ private void ShowAbout()
         EngineSelection engineSelection = this.GetSelectedEngineSelection();
         PublisherConversionEngine publisherEngine = new PublisherConversionEngine();
         LibreOfficeConversionEngine libreOfficeEngine = this.CreateLibreOfficeEngine();
-        IConversionEngine? pubToPdfEngine = new EngineResolver().ResolveEngine(engineSelection, publisherEngine, libreOfficeEngine);
+        ScribusConversionEngine scribusEngine = this.CreateScribusEngine();
+        IConversionEngine? pubToPdfEngine = new EngineResolver().ResolveEngine(
+            engineSelection,
+            publisherEngine,
+            libreOfficeEngine,
+            scribusEngine);
 
         if (pubToPdfEngine is null)
         {
@@ -838,7 +925,8 @@ private void ShowAbout()
         {
             EngineSelection.Publisher => "Publisher is not installed on this machine.",
             EngineSelection.LibreOffice => "LibreOffice was not found. Set its path above, or install it.",
-            _ => "Neither Publisher nor LibreOffice was found. Install one, or set a LibreOffice path above."
+            EngineSelection.Scribus => "Scribus was not found. Set its path above, or install it.",
+            _ => "None of Publisher, LibreOffice or Scribus was found. Install one, or set a LibreOffice or Scribus path above."
         };
     }
 }

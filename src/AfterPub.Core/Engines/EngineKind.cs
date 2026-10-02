@@ -4,5 +4,6 @@ namespace AfterPub.Core.Engines;
 public enum EngineKind
 {
     Publisher,
-    LibreOffice
+    LibreOffice,
+    Scribus
 }

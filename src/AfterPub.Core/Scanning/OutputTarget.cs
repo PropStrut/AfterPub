@@ -10,5 +10,7 @@ public enum OutputTarget
     Pdf,
 
     /// <summary>An editable companion, produced via LibreOffice Draw. File extension: .odg</summary>
-    Odg
+    Odg,
+
+    Sla
 }
