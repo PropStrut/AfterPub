@@ -175,6 +175,25 @@ target.** The app must work fully offline.
     documents, locked/read-only files, network paths. Still must not crash or hang the
     batch (a timeout and a clear failure status is enough), but none of these need
     dedicated testing or UI treatment for v1.
+  - **Scanning skips what it cannot or should not read.** **Implemented (v1):**
+    - *Protected folders.* The scan uses `EnumerationOptions` with `IgnoreInaccessible`
+      and skips anything carrying the `System` attribute (for example
+      `System Volume Information` and `$RECYCLE.BIN` at a drive root), so scanning a
+      whole drive does not abort on a protected folder. Hidden folders are not skipped,
+      and reparse points are not skipped, so cloud-sync placeholders (OneDrive and
+      similar) stay visible. Skipped folders are currently silent: `Scan` returns only
+      the rows. **Not yet built:** reporting skipped folders to the UI or log, which
+      would need `Scan` to return the rows plus a list of what was skipped.
+    - *SSH public keys.* Files ending in `.pub` can also be SSH public keys, which are
+      not Publisher documents and are excluded from the list. This is a content check
+      (`SshKeyDetector`), not a folder rule, because keys get copied out of `.ssh`
+      folders (backups, downloads, repos). It reads the first 64 bytes: the OLE
+      signature (`D0 CF 11 E0 A1 B1 1A E1`, used by Publisher files) means the file is
+      never treated as a key; text beginning `ssh-`, `ecdsa-sha2-`, `sk-ssh-`,
+      `sk-ecdsa-`, `-----BEGIN `, or `---- BEGIN SSH2 PUBLIC KEY` marks it as a key and
+      it is skipped silently. Anything else is **listed**, because hiding a genuine
+      document is worse than showing a stray file. A file that cannot be read is also
+      listed, so it fails visibly at conversion time.
 
 ## 4. Scope by Version
 
@@ -361,6 +380,9 @@ folder rather than a single file). Decide when v2 starts.
 - Test framework: xUnit **[PROPOSED]**, in a separate test project.
 - Integration tests with real `.pub` files are welcome but optional (skipped when the
   engine or sample files are unavailable).
+- Scanner tests: `SshKeyDetectorTests` cover the key formats, the OLE signature, and
+  unreadable files. **Not yet written:** a test that a recursive scan skips a
+  `System`-attributed folder (`Scan_Recursive_SkipsSystemFolders`).
 
 ## 13. Behavior Rules for Claude When Working in This Repo
 
@@ -453,3 +475,8 @@ and not every dialog is suppressed, which the existing timeout-and-kill pattern
     from Core.
   - The exact page-count mapping LibreOffice uses for a 2-page spread, so the confidence
     score's page-count check can be tuned correctly instead of guessing.
+  - Whether every Publisher version the app might meet begins with the OLE signature.
+    The SSH key check does not depend on it (unknown content is listed, not hidden),
+    but confirming against old real files would let the check be tightened. Publisher
+    2010 is the oldest checked so far (verify with `Format-Hex -Count 8`).
+    
