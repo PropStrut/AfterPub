@@ -20,14 +20,28 @@ public sealed class PubFileScanner : IPubFileScanner
             throw new DirectoryNotFoundException($"Scan folder not found: {options.RootFolder}");
         }
 
-        SearchOption searchOption = options.Recursive
-            ? SearchOption.AllDirectories
-            : SearchOption.TopDirectoryOnly;
+        // The SearchOption overload of EnumerateFiles aborts the whole scan on the first
+        // inaccessible folder (for example "System Volume Information" at a drive root).
+        // EnumerationOptions lets us skip such folders and keep going (CLAUDE.md section 3.4:
+        // one bad item never aborts the batch). Skipping the System attribute also avoids
+        // "$RECYCLE.BIN" and similar protected folders.
+        EnumerationOptions enumerationOptions = new EnumerationOptions
+        {
+            RecurseSubdirectories = options.Recursive,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.System
+        };
 
         List<ConversionRow> rows = new List<ConversionRow>();
 
-        foreach (string fullPath in Directory.EnumerateFiles(options.RootFolder, "*.pub", searchOption))
+        foreach (string fullPath in Directory.EnumerateFiles(options.RootFolder, "*.pub", enumerationOptions))
         {
+            // SSH public keys also end in .pub but are not Publisher documents.
+            if (SshKeyDetector.IsSshPublicKey(fullPath))
+            {
+                continue;
+            }
+
             FileInfo fileInfo = new FileInfo(fullPath);
             string relativePath = Path.GetRelativePath(options.RootFolder, fullPath);
             SourceFile source = new SourceFile(fullPath, relativePath, fileInfo.Length, fileInfo.LastWriteTimeUtc);
