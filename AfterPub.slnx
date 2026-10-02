@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AfterPub.App/AfterPub.App.csproj" />
+    <Project Path="src/AfterPub.Core/AfterPub.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AfterPub.Tests/AfterPub.Tests.csproj" />
+  </Folder>
+</Solution>
