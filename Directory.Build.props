@@ -1,0 +1,22 @@
+<Project>
+
+  <!-- Shared metadata for every project in the solution (App, Core, Tests). -->
+  <PropertyGroup>
+    <Product>AfterPub</Product>
+    <Authors>Brian Reed</Authors>
+    <Company>Doc Raster Computer Services</Company>
+    <Copyright>Copyright 2026 Brian Reed</Copyright>
+    <RepositoryUrl>https://github.com/PropStrut/AfterPub</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Exposes the repo URL at runtime so the About box has one source of truth. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>RepositoryUrl</_Parameter1>
+      <_Parameter2>$(RepositoryUrl)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

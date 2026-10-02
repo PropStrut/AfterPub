@@ -369,6 +369,24 @@ public class MainForm : Form
         this.FormClosing += this.OnFormClosing;
     }
 
+// F1 opens the About box from anywhere in the window, even while the grid has focus.
+protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+{
+    if (keyData == Keys.F1)
+    {
+        ShowAbout();
+        return true;
+    }
+
+    return base.ProcessCmdKey(ref msg, keyData);
+}
+
+private void ShowAbout()
+{
+    using AboutForm about = new AboutForm();
+    about.ShowDialog(this);
+}
+
     private void LoadSettingsIntoControls()
     {
         AppSettings settings = this._settingsStore.Load();
