@@ -1,6 +1,6 @@
 # CLAUDE.md — AfterPub
 
-> DRAFT v0.7. Items marked **[PROPOSED]** were suggested by Claude and not yet confirmed.
+> DRAFT v0.8. Items marked **[PROPOSED]** were suggested by Claude and not yet confirmed.
 > Anything that says "verify" or "to confirm" refers to a detail that must be checked
 > against current documentation or real testing before relying on it.
 > "Open Questions" (last section) lists what is still undecided.
@@ -8,11 +8,21 @@
 ## 1. Purpose
 
 Microsoft Publisher is end-of-life and its `.pub` format is proprietary. **AfterPub** is a
-Windows desktop app that helps people migrate their `.pub` files to open, lasting formats.
+Windows desktop app that **finds `.pub` files in a folder tree and shows which of them
+already have matching derivative files (PDF, ODG, SLA), so you can see at a glance what is
+still missing.** Converting the missing ones is the secondary feature.
 
-- Primary output: high-quality **PDF** (a faithful visual copy).
-- Ultimate goal: get documents into an **editable** format. PDF alone is not practically
-  editable, so the app also supports an optional editable output stage.
+- **Scanning is the strength.** A scan always looks for every `.pub` file and always
+  reports PDF, ODG and SLA status for each, whatever the person intends to convert. It
+  works with no conversion engine installed at all.
+- **Conversion fills the gaps.** Primary output: high-quality **PDF** (a faithful visual
+  copy). Ultimate goal: get documents into an **editable** format. PDF alone is not
+  practically editable, so the app also supports optional editable outputs (ODG, SLA).
+- **Engine quality is uneven, and the UI says so.** Publisher (COM) gives perfect PDFs.
+  LibreOffice and Scribus read `.pub` through the same library (libmspub); their results
+  are rough (text can be silently dropped, image borders mis-sized, one stress file made a
+  ~183 MB PDF). They are best-effort, labelled in the UI, and not worth much more engine
+  work (section 3.1).
 - Audience: the author first, but built to be useful to other people, so it should be
   polished, documented, and forgiving. Different users will edit in different tools.
 - **Publisher's retirement shapes the priorities.** Microsoft 365 subscribers lost
@@ -27,24 +37,30 @@ Windows desktop app that helps people migrate their `.pub` files to open, lastin
 The main window is **one list** (a `DataGridView`). Each row is one source `.pub` file.
 
 - Leftmost columns: **source folder** and **source file name**.
-- Columns to the right describe the converted file(s), grouped per output type
-  (for example PDF, ODG).
-- Columns are **optional**. The user chooses which are visible (right-click the header);
-  the choice is saved in settings. Candidate columns:
-  - Status per output type (see section 3.3)
-  - Output date and size; source date and size
+- Columns to the right show the **status of each derivative file**, one column per output
+  type: **PDF, ODG and SLA**. These three are always present and always filled in by a
+  scan; they do not depend on which conversion targets are ticked. A row has no overall
+  "converted" verdict: the person reads the columns and judges for themselves.
+- Further columns are **optional** and not yet built. The user chooses which are visible
+  (right-click the header); the choice is saved in settings. Candidate columns:
+  - Output date and size; source date and size; path
   - Engine used
   - Page count
   - Confidence score (section 5)
   - Missing fonts: count, and names (section 6)
   - Warnings
-- Sort by any column. **[PROPOSED]** Filter and group by folder or status.
+- Sort by any column and filter (for example "show only missing PDFs") — **not yet
+  built**; the grid columns are currently not sortable.
 
 Actions:
 
-1. **Scan** a folder: current directory only, or recursively through sub-directories.
-2. **Convert** the unconverted files (all rows, or a selected subset), with progress and
-   per-file success/failure reporting. One bad file must never abort the batch.
+1. **Scan** a folder: current directory only, or recursively through sub-directories. A
+   scan always looks for `.pub` files and checks PDF, ODG and SLA for each. It runs on a
+   background thread, shows the number found so far in the window title, and **Cancel**
+   stops it. A scan that finds nothing says so.
+2. **Convert** the selected rows to the formats ticked under **Convert to** (PDF, ODG,
+   SLA), with progress and per-file success/failure reporting. One bad file must never
+   abort the batch.
 3. **Cancel** a running batch (section 3.4).
 
 The UI must stay responsive during scans and conversions: do the work off the UI thread.
@@ -154,9 +170,19 @@ target.** The app must work fully offline.
 
 ### 3.3 What "converted" means
 
-- Status is tracked **per output type**. A source row counts as **fully converted** only
-  when **every enabled output target exists**. Enabling ODG later makes previously
-  finished rows partly converted, which is correct.
+- Status is tracked **per output type** and read live from the file system. A scan always
+  reports PDF, ODG and SLA for every `.pub` found, independent of the **Convert to**
+  checkboxes, which only decide what a conversion creates. The scan checks only whether a
+  file exists, so it needs no engine; whether a format can be *created* is a separate
+  question answered by engine detection (for example the SLA checkbox is enabled only
+  when Scribus is found, but the SLA column always shows status).
+- There is **no overall "fully converted" status** in the UI. The only place a rule is
+  needed is the **Select not converted** button: it ticks every row missing an output for
+  any format currently ticked under **Convert to**. (`ConversionRow.IsFullyConverted`
+  still exists in Core and now covers all three outputs for scanned rows; the UI does not
+  use it.)
+- After each file is converted, the app re-reads that row's outputs from disk, so
+  **Select not converted** and the overwrite check never use stale scan data.
 - Write each output to a **temporary name and rename it on success**, so an existing
   output file always means a complete one. A crash must never leave a partial file that
   looks converted. **Implemented for the Scribus engine only** (its PDF is written to a
@@ -207,8 +233,8 @@ target.** The app must work fully offline.
   summary of converted, failed, skipped and cancelled/aborted counts.
 - **Selection helpers — implemented (v1).** A select-all checkbox in the first column's
   header (three states: none, some, all) and a **Select not converted** button that
-  ticks every row still missing an output for any currently ticked target (the same
-  rule as section 3.3). Rows start unticked after a scan.
+  ticks every row still missing an output for any format currently ticked under
+  **Convert to** (the same rule as section 3.3). Rows start unticked after a scan.
 - **Failures never stop the batch.** Each problem becomes a status with a reason in the
   Warnings column. Based on the author's actual file collection:
   - **Expected, must be handled well:**
@@ -227,21 +253,25 @@ target.** The app must work fully offline.
   - *Protected folders.* The scan uses `EnumerationOptions` with `IgnoreInaccessible`
     and skips anything carrying the `System` attribute (for example
     `System Volume Information` and `$RECYCLE.BIN` at a drive root), so scanning a
-    whole drive does not abort on a protected folder. Hidden folders are not skipped,
-    and reparse points are not skipped, so cloud-sync placeholders (OneDrive and
-    similar) stay visible. Skipped folders are currently silent: `Scan` returns only
-    the rows. **Not yet built:** reporting skipped folders to the UI or log, which
-    would need `Scan` to return the rows plus a list of what was skipped.
+    whole drive does not abort on a protected folder. **Hidden files and folders are
+    scanned** (only `System` is skipped), and reparse points are not skipped, so
+    cloud-sync placeholders (OneDrive and similar) stay visible. **Decision:** skipped
+    folders are never reported to the person; there are no Publisher files in system
+    folders, so `Scan` returns only the rows.
   - *SSH public keys.* Files ending in `.pub` can also be SSH public keys, which are
-    not Publisher documents and are excluded from the list. This is a content check
-    (`SshKeyDetector`), not a folder rule, because keys get copied out of `.ssh`
-    folders (backups, downloads, repos). It reads the first 64 bytes: the OLE
-    signature (`D0 CF 11 E0 A1 B1 1A E1`, used by Publisher files) means the file is
-    never treated as a key; text beginning `ssh-`, `ecdsa-sha2-`, `sk-ssh-`,
-    `sk-ecdsa-`, `-----BEGIN `, or `---- BEGIN SSH2 PUBLIC KEY` marks it as a key and
-    it is skipped silently. Anything else is **listed**, because hiding a genuine
+    not Publisher documents and are excluded from the list. **Decision:** they are
+    skipped silently and never named in the UI or logs, so key files are not exposed.
+    This is a content check (`SshKeyDetector`), not a folder rule, because keys get
+    copied out of `.ssh` folders (backups, downloads, repos). It reads the first 64
+    bytes: the OLE signature (`D0 CF 11 E0 A1 B1 1A E1`, used by Publisher files) means
+    the file is never treated as a key; text beginning `ssh-`, `ecdsa-sha2-`,
+    `sk-ssh-`, `sk-ecdsa-`, `-----BEGIN `, or `---- BEGIN SSH2 PUBLIC KEY` marks it as a
+    key and it is skipped. Anything else is **listed**, because hiding a genuine
     document is worse than showing a stray file. A file that cannot be read is also
     listed, so it fails visibly at conversion time.
+  - *Responsiveness.* `IPubFileScanner.Scan` takes a `CancellationToken` and an
+    `IProgress<int>` (files found so far); the UI runs it with `Task.Run`. A cancelled
+    scan throws `OperationCanceledException` and the grid keeps its previous contents.
 
 ## 4. Scope by Version
 
@@ -354,7 +384,8 @@ in Core, with everything below marked done actually wired into the UI's load/sav
 - Engine fallback on failure (on/off, default off) — not yet built (Auto already
   picks the best available engine; retrying the *other* engine after the *chosen*
   one fails mid-conversion is still open, see section 3.1)
-- Output targets to produce (PDF, ODG, ...) — **done**
+- **Convert to** targets (PDF, ODG, SLA): which formats a conversion creates; they do
+  not affect what a scan reports — **done**
 - PDF quality and preservation options — not yet built
 - **Output location:** next to each source file (the author's own default) **or** a
   separate output folder. The list view reads outputs from whichever is configured.
@@ -435,10 +466,12 @@ folder rather than a single file). Decide when v2 starts.
 - Engine-related unit tests that exist: `ScribusLocator` (version ordering, settings
   path wins, missing root), `EngineResolver` with Scribus (Auto order, explicit
   selection), `ScribusConversionEngine` failure paths (PDF and SLA), `SshKeyDetector`,
-  `ProcessTracker`, `RowConverter` with SLA, and `OutputPathResolver` for `.sla`. **Not yet
-  written:** a test that a recursive scan skips a `System`-attributed folder
-  (`Scan_Recursive_SkipsSystemFolders`). The real Scribus run is covered by manual
-  testing only, as with the other engines.
+  `ProcessTracker`, `RowConverter` with SLA, and `OutputPathResolver` for `.sla`.
+  Scanner tests (`PubFileScannerTests`) cover: top folder only vs recursive, non-`.pub`
+  files ignored, per-target existence, all three targets reported when none are named,
+  hidden files and folders included, `System`-attributed folders skipped
+  (`Scan_Recursive_SkipsSystemFolders`), progress reporting, and cancellation. The real
+  Scribus run is covered by manual testing only, as with the other engines.
 
 ## 13. Behavior Rules for Claude When Working in This Repo
 
@@ -475,6 +508,16 @@ approach works. **Also done:** the `.sla` output target and its checkbox (sectio
 Abort now, a select-all header checkbox, and a Select not converted button. **Known
 limits:** the shared libmspub text-loss risk and the large PDF on one stress file (both in
 section 3.1).
+
+**Scanning (the primary feature) — status.** **Done:** recursive scan with hidden files
+included; always reports PDF, ODG and SLA status; background scan with progress and
+Cancel; SSH key and `System` folder skipping; select-all and Select not converted; rows
+refreshed from disk after each conversion. **Open:**
+1. A sortable, filterable grid, plus size, date and path columns (section 2).
+2. **Out of date** (source changed after the output; section 3.3): specified, not built.
+3. Orphan outputs (a PDF with no matching `.pub`): not shown, and undecided whether wanted.
+4. The record file (section 7) to keep engine labels and conversion history.
+5. Re-frame the README and the About box around scanning once a README exists.
 
 **Priorities after Publisher's retirement** (proposed, in order):
 1. Use the Publisher engine now to make reference PDFs of the author's whole collection,

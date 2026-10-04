@@ -7,8 +7,9 @@ using System.Windows.Forms.VisualStyles;
 namespace AfterPub.App;
 
 /// <summary>
-/// Minimal-but-real UI: pick a folder, choose output targets, location, engine, and
-/// overwrite behavior, scan, tick the rows you want, convert them. No quality
+/// Minimal-but-real UI: pick a folder and scan it (the scan always reports PDF, ODG and SLA
+/// status), then choose what to convert to, the location, engine and overwrite behavior,
+/// tick the rows you want, and convert them. No quality
 /// options or record file yet (CLAUDE.md section 14).
 /// </summary>
 public class MainForm : Form
@@ -24,7 +25,7 @@ public class MainForm : Form
     private const string SlowConversionNotice = "Still working... (an engine may be waiting on a dialog)";
 
     private readonly AppSettingsStore _settingsStore;
-    private IReadOnlyList<ConversionRow> _lastScanRows = Array.Empty<ConversionRow>();
+    private List<ConversionRow> _lastScanRows = new List<ConversionRow>();
 
     // State of the select-all checkbox drawn in the grid's first column header.
     private CheckState _headerCheckState = CheckState.Unchecked;
@@ -67,6 +68,9 @@ public class MainForm : Form
     // Shared by the engines that run as separate processes, so Abort now can stop them.
     private readonly ProcessTracker _processTracker = new ProcessTracker();
     private bool _cancelRequested;
+
+    // Non-null only while a scan is running; Cancel cancels the scan instead of a conversion.
+    private CancellationTokenSource? _scanCancellation;
     private readonly Label _overwriteLabel;
     private readonly RadioButton _overwriteAskRadio;
     private readonly RadioButton _overwriteSkipRadio;
@@ -180,7 +184,7 @@ public class MainForm : Form
 
         this._targetsGroup = new GroupBox
         {
-            Text = "Output targets",
+            Text = "Convert to",
             Left = 10,
             Top = 144,
             Width = 860,
@@ -563,6 +567,8 @@ public class MainForm : Form
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
+        this._scanCancellation?.Cancel();
+
         AppSettings settings = new AppSettings
         {
             Recursive = this._recursiveCheckBox.Checked,
@@ -732,7 +738,7 @@ public class MainForm : Form
         }
     }
 
-    private void OnScanClick(object? sender, EventArgs e)
+    private async void OnScanClick(object? sender, EventArgs e)
     {
         string folder = this._folderTextBox.Text.Trim();
         if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
@@ -762,47 +768,95 @@ public class MainForm : Form
             return;
         }
 
-        List<OutputTarget> targets = this.GetSelectedTargets();
-        if (targets.Count == 0)
-        {
-            MessageBox.Show(
-                this,
-                "Choose at least one output target (PDF, ODG and/or SLA).",
-                "AfterPub",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
+        // The scan always looks for .pub files and reports PDF, ODG and SLA status for each,
+        // whatever is ticked under "Convert to". Those checkboxes only affect conversion.
         IPubFileScanner scanner = new PubFileScanner(new OutputPathResolver());
         ScanOptions options = new ScanOptions
         {
             RootFolder = folder,
             Recursive = this._recursiveCheckBox.Checked,
-            EnabledTargets = targets,
             LocationMode = locationMode,
             SeparateOutputRoot = separateOutputRoot
         };
 
-        IReadOnlyList<ConversionRow> rows;
+        // While scanning, the Cancel button cancels the scan. Conversion controls stay off.
+        string originalTitle = this.Text;
+        this._scanButton.Enabled = false;
+        this._convertButton.Enabled = false;
+        this._selectNotConvertedButton.Enabled = false;
+        this._cancelButton.Enabled = true;
+        this._cancelButton.Text = "Cancel";
+
+        CancellationTokenSource cancellation = new CancellationTokenSource();
+        this._scanCancellation = cancellation;
+
+        // Progress<T> created on the UI thread posts its callback back to the UI thread.
+        Progress<int> progress = new Progress<int>(count => this.Text = $"{originalTitle} - scanning, {count} found");
+
+        IReadOnlyList<ConversionRow>? rows = null;
+        string? errorMessage = null;
+        bool wasCancelled = false;
+
         try
         {
-            rows = scanner.Scan(options);
+            rows = await Task.Run(() => scanner.Scan(options, cancellation.Token, progress), cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            wasCancelled = true;
         }
         catch (Exception ex)
         {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            this._scanCancellation = null;
+            cancellation.Dispose();
+        }
+
+        if (this.IsDisposed)
+        {
+            return;
+        }
+
+        this.Text = originalTitle;
+        this._scanButton.Enabled = true;
+        this._convertButton.Enabled = true;
+        this._selectNotConvertedButton.Enabled = true;
+        this._cancelButton.Enabled = false;
+        this._cancelButton.Text = "Cancel";
+
+        if (wasCancelled)
+        {
+            // Keep whatever the grid showed before; a half-finished scan is not shown.
+            return;
+        }
+
+        if (errorMessage is not null || rows is null)
+        {
             MessageBox.Show(
                 this,
-                $"Scan failed: {ex.Message}",
+                $"Scan failed: {errorMessage}",
                 "AfterPub",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             return;
         }
 
-        this._lastScanRows = rows;
+        this._lastScanRows = rows.ToList();
         this.PopulateGrid(rows);
         this.RefreshEngineStatusLabel();
+
+        if (rows.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                "No .pub files found.",
+                "AfterPub",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
     }
 
     private void PopulateGrid(IReadOnlyList<ConversionRow> rows)
@@ -866,6 +920,15 @@ public class MainForm : Form
 
     private void OnCancelClick(object? sender, EventArgs e)
     {
+        // A scan in progress is cancelled first; there is no conversion running at the same time.
+        if (this._scanCancellation is not null)
+        {
+            this._scanCancellation.Cancel();
+            this._cancelButton.Enabled = false;
+            this._cancelButton.Text = "Cancelling...";
+            return;
+        }
+
         // Finish the file currently converting, then stop. Files not yet started stay
         // untouched and still show as not converted.
         this._cancelRequested = true;
@@ -1002,6 +1065,18 @@ public class MainForm : Form
         CheckBoxRenderer.DrawCheckBox(e.Graphics, glyphLocation, glyphState);
 
         e.Handled = true;
+    }
+
+    // Rebuilds a row with its output files re-checked on disk. The source is unchanged.
+    private static ConversionRow RefreshRow(ConversionRow row)
+    {
+        List<OutputInfo> refreshed = new List<OutputInfo>();
+        foreach (OutputInfo output in row.Outputs)
+        {
+            refreshed.Add(OutputInfo.FromFileSystem(output.Target, output.ExpectedPath));
+        }
+
+        return new ConversionRow(row.Source, refreshed);
     }
 
     private static string DescribeStatus(OutputInfo? output)
@@ -1164,6 +1239,11 @@ public class MainForm : Form
             }
 
             RowConversionResult result = await conversionTask;
+
+            // The scan data is a snapshot, so re-read this row's outputs from disk now that the
+            // engines have run. "Select not converted" and the overwrite check then see the
+            // current state instead of the state at scan time.
+            this._lastScanRows[rowIndex] = RefreshRow(row);
 
             ConversionOutcome? pdfOutcome = result.ForTarget(OutputTarget.Pdf);
             if (pdfOutcome is not null)

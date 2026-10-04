@@ -13,7 +13,10 @@ public sealed class PubFileScanner : IPubFileScanner
         this._outputPathResolver = outputPathResolver;
     }
 
-    public IReadOnlyList<ConversionRow> Scan(ScanOptions options)
+    public IReadOnlyList<ConversionRow> Scan(
+        ScanOptions options,
+        CancellationToken cancellationToken = default,
+        IProgress<int>? progress = null)
     {
         if (!Directory.Exists(options.RootFolder))
         {
@@ -23,8 +26,11 @@ public sealed class PubFileScanner : IPubFileScanner
         // The SearchOption overload of EnumerateFiles aborts the whole scan on the first
         // inaccessible folder (for example "System Volume Information" at a drive root).
         // EnumerationOptions lets us skip such folders and keep going (CLAUDE.md section 3.4:
-        // one bad item never aborts the batch). Skipping the System attribute also avoids
-        // "$RECYCLE.BIN" and similar protected folders.
+        // one bad item never aborts the batch). Skipped folders are not reported.
+        //
+        // AttributesToSkip is set to System only. The default is Hidden | System, so this
+        // deliberately includes hidden files and folders in the scan, while still skipping
+        // protected folders such as "$RECYCLE.BIN".
         EnumerationOptions enumerationOptions = new EnumerationOptions
         {
             RecurseSubdirectories = options.Recursive,
@@ -36,7 +42,10 @@ public sealed class PubFileScanner : IPubFileScanner
 
         foreach (string fullPath in Directory.EnumerateFiles(options.RootFolder, "*.pub", enumerationOptions))
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             // SSH public keys also end in .pub but are not Publisher documents.
+            // They are skipped silently and never listed.
             if (SshKeyDetector.IsSshPublicKey(fullPath))
             {
                 continue;
@@ -54,6 +63,7 @@ public sealed class PubFileScanner : IPubFileScanner
             }
 
             rows.Add(new ConversionRow(source, outputs));
+            progress?.Report(rows.Count);
         }
 
         return rows;
