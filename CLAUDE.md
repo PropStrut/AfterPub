@@ -1,6 +1,6 @@
 # CLAUDE.md — AfterPub
 
-> DRAFT v0.4. Items marked **[PROPOSED]** were suggested by Claude and not yet confirmed.
+> DRAFT v0.7. Items marked **[PROPOSED]** were suggested by Claude and not yet confirmed.
 > Anything that says "verify" or "to confirm" refers to a detail that must be checked
 > against current documentation or real testing before relying on it.
 > "Open Questions" (last section) lists what is still undecided.
@@ -15,6 +15,12 @@ Windows desktop app that helps people migrate their `.pub` files to open, lastin
   editable, so the app also supports an optional editable output stage.
 - Audience: the author first, but built to be useful to other people, so it should be
   polished, documented, and forgiving. Different users will edit in different tools.
+- **Publisher's retirement shapes the priorities.** Microsoft 365 subscribers lost
+  access to Publisher on October 1, 2026; copies from a perpetual license still install
+  and run, without support. The Publisher engine therefore serves only people who still
+  have it, including the author, who can use it while it lasts to make reference PDFs of
+  their own collection. For everyone else, the LibreOffice and Scribus engines, and the
+  quality of the libmspub import they share, are the product (section 3.1).
 
 ## 2. Core User Experience
 
@@ -55,6 +61,7 @@ target. Both are selectable by the user.
 |---|---|---|
 | **Publisher automation** | Microsoft Publisher installed | Best fidelity. Detect availability by checking whether the `Publisher.Application` COM ProgID is registered. Use late binding (`Type.GetTypeFromProgID`) so there is no compile-time Office dependency. Export via `Document.ExportAsFixedFormat(pbFixedFormatTypePDF, filename, ...)` — confirmed against Microsoft's Publisher VBA reference; available since Publisher 2007. |
 | **LibreOffice** | LibreOffice installed **by the user** | Uses libmspub-based import, run headless: `soffice --headless --convert-to pdf --outdir "<dir>" "<file>"` — confirmed syntax. **Must** launch with its own profile via `-env:UserInstallation=file:///<path>`: without this, a conversion can silently fail or misbehave if the user already has their own LibreOffice open (a real, commonly reported gotcha, not just a defensive precaution). On Windows, launch via `Process` and wait with `Process.WaitForExit()` rather than assuming the call blocks. Fidelity varies per document — see the known risk noted below. |
+| **Scribus** | Scribus installed **by the user** | Uses the same libmspub-based `.pub` import as LibreOffice, run headless through a Python script: `Scribus.exe -g -py <script>`, using the Scripter API (`openDoc()`, `PDFfile()`, `save()`, `closeDoc()`). Paths reach the script as environment variables (`AFTERPUB_INPUT`, `AFTERPUB_OUTPUT`, `AFTERPUB_RESULT`), not command-line arguments, so nothing depends on how Scribus forwards script arguments. The script writes a result file (`OK` or `ERROR: ...`); the engine stops waiting as soon as it appears, gives Scribus 5 seconds to exit, and kills it if it lingers or after 90 seconds. The PDF is written to a temporary folder and moved into place only on success. Detection (`ScribusLocator`): a path from settings first, then any `Scribus*` folder under `Program Files` / `Program Files (x86)` containing `Scribus.exe`, highest version wins (compared numerically). Unlike the other engines it also imports Publisher's off-page scratch-area content, as an extra final page; the author considers that an improvement. |
 
 **LibreOffice is not bundled** (decided). The app only detects an existing install:
 first a path set in settings, then standard install locations. Launch it with its own
@@ -74,11 +81,28 @@ for this page" check: it is a general safeguard that would have caught this spec
 failure without knowing its cause. Worth revisiting with more test files once the app can
 batch-process them.
 
-At startup the app detects which engines are available and defaults to the best one
-(Publisher if present, otherwise LibreOffice). The user can override this in settings.
-If neither engine is found, show a plain message saying at least one is required, naming
-the LibreOffice download page in text (the app itself makes no network calls). The engine
-settings should show what was detected and where.
+**Confirmed on a second file, and on Scribus.** Scribus's `.pub` import also dropped text
+from a page of a second, ordinary file, and on the stress file it kept an empty text box
+and mis-sized some image borders. LibreOffice and Scribus share libmspub, so treat text
+loss as a limit of that library, not of either program: **Publisher is the only engine
+that preserves everything.** The UI therefore labels each PDF produced by LibreOffice or
+Scribus with the engine used (for example "Converted (Scribus)"), and the batch summary
+warns that the PDFs should be checked against the originals. The label is not persisted:
+a later rescan shows plain "Converted" until the record file (section 7) exists.
+
+On the first stress file (Publisher 2010 era; 9 pages in Scribus: the original 8 plus the
+scratch-area page), Scribus produced a PDF of about 183 MB, against about 3.3 MB from
+Publisher. The size did not change meaningfully with image settings (150 and 300 dpi
+limits, JPEG at three quality levels, Zip), and one page held a large image plus
+scratch-area elements. The cause was not found. A second, ordinary file produced a
+reasonable size. Not pursued further.
+
+At startup the app detects which engines are available. **Auto** tries them in this
+order: Publisher, then LibreOffice, then Scribus (the order lives in one place,
+`EngineResolver`). The user can override this in settings. If no engine is found, show a
+plain message saying at least one is required, naming the LibreOffice and Scribus
+download pages in text (the app itself makes no network calls). The engine settings show
+what was detected and where.
 
 **Engine fallback (optional setting).** If the selected engine cannot open a file and the
 other engine is available, try the other engine once. Default: **off [PROPOSED]**.
@@ -110,8 +134,16 @@ a clear reason and continue with the batch.
    ODG with the correct base name. **Not yet built:** disabling the ODG checkbox in
    the UI when LibreOffice isn't detected — right now it can be checked regardless,
    and simply fails per-row with a clear message if LibreOffice is unavailable at
-   convert time. Other targets (e.g. Scribus's `.sla`) are being added next; the
-   output target stays pluggable for that reason.
+   convert time. Scribus can now produce the PDF stage (section 3.1).
+   **SLA output — implemented (v1):** the `.sla` target (Scribus's native format) is
+   saved straight from the imported `.pub` with `saveDocAs()`, not from a PDF, so asking
+   for SLA never creates a PDF and an SLA failure never affects the PDF or ODG results
+   (`RowConverter` calls an `IPubToSlaConverter`, implemented by
+   `ScribusConversionEngine`). The UI has an SLA checkbox, enabled only when Scribus is
+   detected, and an SLA column; successful rows read "Converted (Scribus)". Quality is
+   limited by libmspub (section 3.1). **Idea, not built:** generating the `.sla` from
+   Publisher's PDF instead, as ODG is, which may look better for people who still have
+   Publisher; untested. The output target stays pluggable for that reason.
 3. **Extracted assets (later phase).** Text and original images at full resolution.
 4. **Structured export (future idea).** With Publisher automation, walk the document
    object model (pages, shapes, text frames, fonts, positions) and write structured data
@@ -127,7 +159,9 @@ target.** The app must work fully offline.
   finished rows partly converted, which is correct.
 - Write each output to a **temporary name and rename it on success**, so an existing
   output file always means a complete one. A crash must never leave a partial file that
-  looks converted.
+  looks converted. **Implemented for the Scribus engine only** (its PDF is written to a
+  temporary folder and moved into place on success); the Publisher and LibreOffice
+  engines still write directly to the final path.
 - **Out of date:** flag a row when the source changed after conversion. Prefer comparing
   the source's stored size and modified time (from the record file, section 7) over
   comparing file dates, which copying and cloud sync can disturb. Out-of-date rows can be
@@ -154,13 +188,27 @@ target.** The app must work fully offline.
   described above is not built. The same result is reachable today by ticking fewer
   rows and converting in more than one pass; revisit only if that proves annoying in
   practice.
-- **Cancel** (mid-batch cancel/abort) is **not yet built** — the current batch loop runs
-  to completion once started. Cancel is offered in two forms once it exists: **Cancel**
-  finishes the file currently converting, then stops; **Abort now** kills the engine
-  process immediately and discards the partial output. Unfinished rows stay "not
-  converted". End every batch with a summary of how many finished, failed, or were
-  skipped (**implemented**: the summary message box already reports converted, failed,
-  and skipped counts).
+- **Cancel and Abort now — implemented (v1).** Two buttons next to Convert, enabled only
+  while a batch runs. **Cancel** finishes the file currently converting, then stops.
+  **Abort now** stops the engine process immediately: LibreOffice and Scribus run as
+  processes the app starts and register them with a shared `ProcessTracker`. A partial
+  LibreOffice output is deleted unless a file was already there beforehand; Scribus
+  writes to a temporary folder first, so nothing partial exists. For Publisher, the
+  engine registers only the Publisher process it started itself (found by comparing
+  running `MSPUB` processes before and after launching), so Abort now stops that one
+  and never touches a Publisher the user already had open. **Publisher engine safety
+  (implemented, unverified against real use):** each conversion has a three-minute
+  timeout, after which the process it started is stopped and the file fails with a clear
+  message; the engine hides, and quits, an instance only if it started it, so if
+  automation ever attaches to the user's own running Publisher it leaves that alone.
+  **Slow-file notice (implemented):** if a file is still converting after ten seconds, its
+  row reads "Still working... (an engine may be waiting on a dialog)", for any engine.
+  Unfinished rows stay "not converted". Every batch ends with a
+  summary of converted, failed, skipped and cancelled/aborted counts.
+- **Selection helpers — implemented (v1).** A select-all checkbox in the first column's
+  header (three states: none, some, all) and a **Select not converted** button that
+  ticks every row still missing an output for any currently ticked target (the same
+  rule as section 3.3). Rows start unticked after a scan.
 - **Failures never stop the batch.** Each problem becomes a status with a reason in the
   Warnings column. Based on the author's actual file collection:
   - **Expected, must be handled well:**
@@ -175,25 +223,25 @@ target.** The app must work fully offline.
     documents, locked/read-only files, network paths. Still must not crash or hang the
     batch (a timeout and a clear failure status is enough), but none of these need
     dedicated testing or UI treatment for v1.
-  - **Scanning skips what it cannot or should not read.** **Implemented (v1):**
-    - *Protected folders.* The scan uses `EnumerationOptions` with `IgnoreInaccessible`
-      and skips anything carrying the `System` attribute (for example
-      `System Volume Information` and `$RECYCLE.BIN` at a drive root), so scanning a
-      whole drive does not abort on a protected folder. Hidden folders are not skipped,
-      and reparse points are not skipped, so cloud-sync placeholders (OneDrive and
-      similar) stay visible. Skipped folders are currently silent: `Scan` returns only
-      the rows. **Not yet built:** reporting skipped folders to the UI or log, which
-      would need `Scan` to return the rows plus a list of what was skipped.
-    - *SSH public keys.* Files ending in `.pub` can also be SSH public keys, which are
-      not Publisher documents and are excluded from the list. This is a content check
-      (`SshKeyDetector`), not a folder rule, because keys get copied out of `.ssh`
-      folders (backups, downloads, repos). It reads the first 64 bytes: the OLE
-      signature (`D0 CF 11 E0 A1 B1 1A E1`, used by Publisher files) means the file is
-      never treated as a key; text beginning `ssh-`, `ecdsa-sha2-`, `sk-ssh-`,
-      `sk-ecdsa-`, `-----BEGIN `, or `---- BEGIN SSH2 PUBLIC KEY` marks it as a key and
-      it is skipped silently. Anything else is **listed**, because hiding a genuine
-      document is worse than showing a stray file. A file that cannot be read is also
-      listed, so it fails visibly at conversion time.
+- **Scanning skips what it cannot or should not read.** **Implemented (v1):**
+  - *Protected folders.* The scan uses `EnumerationOptions` with `IgnoreInaccessible`
+    and skips anything carrying the `System` attribute (for example
+    `System Volume Information` and `$RECYCLE.BIN` at a drive root), so scanning a
+    whole drive does not abort on a protected folder. Hidden folders are not skipped,
+    and reparse points are not skipped, so cloud-sync placeholders (OneDrive and
+    similar) stay visible. Skipped folders are currently silent: `Scan` returns only
+    the rows. **Not yet built:** reporting skipped folders to the UI or log, which
+    would need `Scan` to return the rows plus a list of what was skipped.
+  - *SSH public keys.* Files ending in `.pub` can also be SSH public keys, which are
+    not Publisher documents and are excluded from the list. This is a content check
+    (`SshKeyDetector`), not a folder rule, because keys get copied out of `.ssh`
+    folders (backups, downloads, repos). It reads the first 64 bytes: the OLE
+    signature (`D0 CF 11 E0 A1 B1 1A E1`, used by Publisher files) means the file is
+    never treated as a key; text beginning `ssh-`, `ecdsa-sha2-`, `sk-ssh-`,
+    `sk-ecdsa-`, `-----BEGIN `, or `---- BEGIN SSH2 PUBLIC KEY` marks it as a key and
+    it is skipped silently. Anything else is **listed**, because hiding a genuine
+    document is worse than showing a stray file. A file that cannot be read is also
+    listed, so it fails visibly at conversion time.
 
 ## 4. Scope by Version
 
@@ -301,7 +349,8 @@ Stored in a plain file next to the executable (portable-friendly):
 `afterpub.settings.json`. **Implemented (v1)**, via `AppSettings`/`AppSettingsStore`
 in Core, with everything below marked done actually wired into the UI's load/save:
 
-- Conversion engine (auto / Publisher / LibreOffice) and the LibreOffice path — **done**
+- Conversion engine (auto / Publisher / LibreOffice / Scribus) and the optional
+  LibreOffice and Scribus paths — **done**
 - Engine fallback on failure (on/off, default off) — not yet built (Auto already
   picks the best available engine; retrying the *other* engine after the *chosen*
   one fails mid-conversion is still open, see section 3.1)
@@ -368,6 +417,9 @@ folder rather than a single file). Decide when v2 starts.
 - Modern C# naming: `PascalCase` for types, methods, properties; `camelCase` for locals
   and parameters; `_camelCase` for private fields; interfaces prefixed `I`.
 - Keep it simple. Prefer straightforward code over clever abstractions.
+- **File-type naming:** lowercase with a leading dot in prose, code and filenames
+  (`.pub`, `.pdf`, `.odg`, `.sla`); uppercase without a dot in UI labels (`PDF`, `ODG`,
+  `SLA`).
 
 ## 12. Testing
 
@@ -376,13 +428,17 @@ folder rather than a single file). Decide when v2 starts.
   settings handling, record-file read/write (including missing or corrupt files),
   font-comparison logic, score calculation, and the overwrite pre-check logic.
 - Engines sit behind `IConversionEngine` so tests use fakes. The unit test suite must not
-  require Publisher or LibreOffice.
+  require Publisher, LibreOffice or Scribus.
 - Test framework: xUnit **[PROPOSED]**, in a separate test project.
 - Integration tests with real `.pub` files are welcome but optional (skipped when the
   engine or sample files are unavailable).
-- Scanner tests: `SshKeyDetectorTests` cover the key formats, the OLE signature, and
-  unreadable files. **Not yet written:** a test that a recursive scan skips a
-  `System`-attributed folder (`Scan_Recursive_SkipsSystemFolders`).
+- Engine-related unit tests that exist: `ScribusLocator` (version ordering, settings
+  path wins, missing root), `EngineResolver` with Scribus (Auto order, explicit
+  selection), `ScribusConversionEngine` failure paths (PDF and SLA), `SshKeyDetector`,
+  `ProcessTracker`, `RowConverter` with SLA, and `OutputPathResolver` for `.sla`. **Not yet
+  written:** a test that a recursive scan skips a `System`-attributed folder
+  (`Scan_Recursive_SkipsSystemFolders`). The real Scribus run is covered by manual
+  testing only, as with the other engines.
 
 ## 13. Behavior Rules for Claude When Working in This Repo
 
@@ -403,25 +459,36 @@ folder rather than a single file). Decide when v2 starts.
 5. LibreOffice engine -> PDF (detection, separate profile folder).
 6. Editable output stage (PDF -> ODG). — **done**
 7. Batch handling: overwrite pre-check (**done**, batch-level only — see section 3.4),
-   cancel/abort (not yet built), temp-name-then-rename (not yet built — PDF/ODG are
-   written directly to their final path today), engine fallback (not yet built).
+   cancel/abort (**done**), a Publisher per-file timeout (**done**), temp-name-then-rename (done for the Scribus engine only; PDF/ODG from the other
+   engines are written directly to their final path today), engine fallback (not yet built).
 8. Confidence score (simple checks) and missing-fonts report.
 9. Settings UI, polish, portable packaging.
 10. v2 items (section 4).
 
-**In progress beyond the original phase list:** adding Scribus as a third engine
-(parallel to Publisher/LibreOffice, usable for plain PDF too) with `.sla` as an
-optional output target. Scribus reads `.pub` via the same libmspub library
-LibreOffice uses; real-world testing (section 15) found import quality comparable
-to LibreOffice's, including the same known page-specific text-loss risk (section
-3.1), plus Scribus additionally imports Publisher's off-page scratch-area content,
-which the author considers a genuine improvement, not a bug to fix. Scribus's
-headless automation is architecturally different from LibreOffice's simple
-`--convert-to` flag — it runs a Python script via `scribus -g -py script.py --
-file`, using the documented Scripter API (`openDoc()` / `PDFfile()` / `save()` /
-`closeDoc()`) — and headless mode has a known quirk where the GUI can briefly flash
-and not every dialog is suppressed, which the existing timeout-and-kill pattern
-(already built for LibreOffice) should cover but has not yet been tested against.
+**Beyond the original phase list: Scribus (third engine).** **Done:** detection
+(`ScribusLocator`), `ScribusConversionEngine` for `.pub` -> PDF (section 3.1), Auto order
+Publisher / LibreOffice / Scribus, the `ScribusPath` setting, and the UI (engine radio
+button, path row, detection status, and an engine label on PDFs made by LibreOffice or
+Scribus). Confirmed by real testing: `openDoc()` opens a `.pub` directly, headless mode
+exits by itself in about 30 seconds even for a very large document, and the result-file
+approach works. **Also done:** the `.sla` output target and its checkbox (section 3.2), Cancel and
+Abort now, a select-all header checkbox, and a Select not converted button. **Known
+limits:** the shared libmspub text-loss risk and the large PDF on one stress file (both in
+section 3.1).
+
+**Priorities after Publisher's retirement** (proposed, in order):
+1. Use the Publisher engine now to make reference PDFs of the author's whole collection,
+   while Publisher still runs. These double as the reference set for testing the
+   open-source engines (section 15, sample files).
+2. ~~A per-file timeout for the Publisher engine~~ **Done** (three minutes; see section
+   3.4). Still to verify with real use: that a stuck conversion is stopped cleanly.
+3. The confidence score (phase 8), because it is the only protection against the
+   open-source engines silently dropping text when no Publisher reference exists.
+4. Reproduce the libmspub text-loss bug with a small `.pub` made while Publisher is
+   available, and report it upstream; a fix there helps every user of LibreOffice and
+   Scribus.
+5. Investigate whether any tool can recover text separately (a plain-text companion
+   file), so content is never lost even when a text box is dropped from the output.
 
 ## 15. Open Questions
 
@@ -475,8 +542,21 @@ and not every dialog is suppressed, which the existing timeout-and-kill pattern
     from Core.
   - The exact page-count mapping LibreOffice uses for a 2-page spread, so the confidence
     score's page-count check can be tuned correctly instead of guessing.
-  - Whether every Publisher version the app might meet begins with the OLE signature.
-    The SSH key check does not depend on it (unknown content is listed, not hidden),
-    but confirming against old real files would let the check be tightened. Publisher
-    2010 is the oldest checked so far (verify with `Format-Hex -Count 8`).
-    
+  - ~~Whether Scribus's `openDoc()` opens a `.pub` directly, and whether arguments after
+    `--` reach the script~~ **Resolved by real testing.** `openDoc()` opens `.pub`
+    files directly. Script arguments were avoided altogether by passing paths in
+    environment variables, so the `--` question never needed an answer.
+  - Whether the LibreOffice engine's direct `.pub` -> PDF path shows the same text loss
+    as Scribus on the same files. Not yet exercised through the app.
+  - Whether every Publisher version the app might meet begins with the OLE signature
+    (`D0 CF 11 E0 A1 B1 1A E1`). The SSH key check does not depend on it (unknown
+    content is listed, not hidden), but confirming against old real files would let the
+    check be tightened. Verify with `Format-Hex -Path <file> -Count 8`.
+  - Why one stress file produced a ~183 MB PDF through Scribus (section 3.1).
+  - Whether Publisher automation (`Activator.CreateInstance`) starts a new Publisher process
+    or attaches to one the user already has open, and what a missing-font dialog does during
+    automation. The engine is written to be safe either way (section 3.4), but the real
+    behavior is unconfirmed. Test: open a document in Publisher, run a conversion, and check
+    that the user's window is neither hidden nor closed.
+  - Whether any open-source tool can read the text that libmspub drops, for the text-recovery
+    idea in section 14.

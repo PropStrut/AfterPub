@@ -9,18 +9,35 @@ namespace AfterPub.Core.Conversion;
 /// FROM a PDF via LibreOffice, regardless of which engine made that PDF. When PDF is
 /// not itself a wanted target, the PDF used to feed ODG is a scratch file — produced,
 /// used, then deleted — rather than a kept, tracked output.
+///
+/// SLA is independent of that chain: Scribus saves it straight from the .pub, so asking
+/// for SLA never creates a PDF, and an SLA failure never affects the PDF or ODG outcomes.
 /// </summary>
 public sealed class RowConverter
 {
-    private readonly IConversionEngine _pubToPdfEngine;
+    private readonly IConversionEngine? _pubToPdfEngine;
     private readonly IPdfToOdgConverter _odgConverter;
+    private readonly IPubToSlaConverter? _slaConverter;
 
-    /// <param name="pubToPdfEngine">Whichever engine (Publisher or LibreOffice) was resolved for .pub -&gt; PDF.</param>
+    /// <param name="pubToPdfEngine">
+    /// Whichever engine (Publisher, LibreOffice or Scribus) was resolved for .pub -&gt; PDF. May be
+    /// null when only SLA is wanted, since SLA does not use the PDF stage; asking for PDF or ODG
+    /// without one fails those targets with a clear message.
+    /// </param>
     /// <param name="odgConverter">The PDF -&gt; ODG capability. In practice always backed by LibreOffice.</param>
-    public RowConverter(IConversionEngine pubToPdfEngine, IPdfToOdgConverter odgConverter)
+    /// <param name="slaConverter">
+    /// The .pub -&gt; SLA capability, in practice always backed by Scribus. Optional so callers
+    /// written before SLA existed still compile; asking for SLA without one fails that target
+    /// with a clear message.
+    /// </param>
+    public RowConverter(
+        IConversionEngine? pubToPdfEngine,
+        IPdfToOdgConverter odgConverter,
+        IPubToSlaConverter? slaConverter = null)
     {
         this._pubToPdfEngine = pubToPdfEngine;
         this._odgConverter = odgConverter;
+        this._slaConverter = slaConverter;
     }
 
     /// <summary>
@@ -36,6 +53,13 @@ public sealed class RowConverter
 
         bool wantsPdf = wantedTargets.Contains(OutputTarget.Pdf);
         bool wantsOdg = wantedTargets.Contains(OutputTarget.Odg);
+        bool wantsSla = wantedTargets.Contains(OutputTarget.Sla);
+
+        if (wantsSla)
+        {
+            // Saved straight from the .pub by Scribus; it does not use the PDF stage below.
+            outcomes[OutputTarget.Sla] = this.ConvertToSla(row);
+        }
 
         if (!wantsPdf && !wantsOdg)
         {
@@ -71,7 +95,9 @@ public sealed class RowConverter
             pdfIsScratch = true;
         }
 
-        ConversionOutcome pdfOutcome = this._pubToPdfEngine.ConvertToPdf(row.Source, pdfPath);
+        ConversionOutcome pdfOutcome = this._pubToPdfEngine is null
+            ? ConversionOutcome.Failed("No conversion engine was available for the PDF stage.")
+            : this._pubToPdfEngine.ConvertToPdf(row.Source, pdfPath);
         if (wantsPdf && !outcomes.ContainsKey(OutputTarget.Pdf))
         {
             outcomes[OutputTarget.Pdf] = pdfOutcome;
@@ -88,6 +114,22 @@ public sealed class RowConverter
         }
 
         return new RowConversionResult(outcomes);
+    }
+
+    private ConversionOutcome ConvertToSla(ConversionRow row)
+    {
+        if (this._slaConverter is null || !this._slaConverter.IsAvailable())
+        {
+            return ConversionOutcome.Failed("Scribus is required to produce SLA output but was not found.");
+        }
+
+        OutputInfo? slaOutput = row.GetOutput(OutputTarget.Sla);
+        if (slaOutput is null)
+        {
+            return ConversionOutcome.Failed("No SLA output path was resolved for this row.");
+        }
+
+        return this._slaConverter.ConvertToSla(row.Source, slaOutput.ExpectedPath);
     }
 
     private ConversionOutcome ConvertToOdg(ConversionRow row, ConversionOutcome pdfOutcome, string pdfPath)

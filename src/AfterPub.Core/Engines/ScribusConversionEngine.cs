@@ -4,9 +4,14 @@ using AfterPub.Core.Scanning;
 namespace AfterPub.Core.Engines;
 
 /// <summary>
-/// Converts .pub to PDF by running Scribus headless with a small Python script
-/// (Scribus's Scripter API). Like LibreOffice, Scribus is never bundled: this only
-/// detects an existing install through <see cref="ScribusLocator"/>.
+/// Runs Scribus headless with a small Python script (Scribus's Scripter API). Like
+/// LibreOffice, Scribus is never bundled: this only detects an existing install through
+/// <see cref="ScribusLocator"/>.
+///
+/// Two capabilities, both through the same headless process:
+/// <see cref="IConversionEngine"/> for .pub -&gt; PDF, and
+/// <see cref="IPubToSlaConverter"/> for .pub -&gt; SLA (Scribus's native format, saved
+/// straight from the imported .pub; CLAUDE.md section 3.2).
 ///
 /// Differences from the LibreOffice engine, all deliberate:
 /// - Paths reach the script through environment variables, not command-line
@@ -15,11 +20,11 @@ namespace AfterPub.Core.Engines;
 ///   keep running after a script finishes, or show a dialog that headless mode does
 ///   not suppress, so this engine stops waiting as soon as the result file appears
 ///   and kills the process if it lingers or exceeds the timeout.
-/// - The PDF is written to a temporary folder and moved into place only on
+/// - The output is written to a temporary folder and moved into place only on
 ///   success, so an existing output file always means a complete one
 ///   (CLAUDE.md section 3.3).
 /// </summary>
-public sealed class ScribusConversionEngine : IConversionEngine
+public sealed class ScribusConversionEngine : IConversionEngine, IPubToSlaConverter
 {
     private static readonly TimeSpan ConversionTimeout = TimeSpan.FromSeconds(90);
 
@@ -30,10 +35,8 @@ public sealed class ScribusConversionEngine : IConversionEngine
     private const string OutputVariable = "AFTERPUB_OUTPUT";
     private const string ResultVariable = "AFTERPUB_RESULT";
 
-    // The Scripter API calls used here (openDoc, PDFfile, save, closeDoc) are documented
-    // by Scribus; whether openDoc accepts a .pub file directly is confirmed by real
-    // testing, not assumed (CLAUDE.md section 15).
-    private const string ScriptText = """
+    // Shared start of every script: read the three paths and define the result writer.
+    private const string ScriptHeader = """
         import os
         import scribus
 
@@ -47,7 +50,13 @@ public sealed class ScribusConversionEngine : IConversionEngine
         source = os.environ["AFTERPUB_INPUT"]
         output = os.environ["AFTERPUB_OUTPUT"]
         result = os.environ["AFTERPUB_RESULT"]
+        """;
 
+    // The Scripter API calls used here (openDoc, PDFfile, save, saveDocAs, closeDoc) are
+    // documented by Scribus. openDoc accepting a .pub directly and PDFfile output are
+    // confirmed by real testing; saveDocAs writing a usable .sla is confirmed the same
+    // way or not at all (CLAUDE.md section 15).
+    private const string PdfScriptBody = """
         try:
             scribus.openDoc(source)
             pdf = scribus.PDFfile()
@@ -63,8 +72,23 @@ public sealed class ScribusConversionEngine : IConversionEngine
             write_result(result, "ERROR: " + str(error))
         """;
 
+    private const string SlaScriptBody = """
+        try:
+            scribus.openDoc(source)
+            scribus.saveDocAs(output)
+            scribus.closeDoc()
+            write_result(result, "OK")
+        except Exception as error:
+            try:
+                scribus.closeDoc()
+            except Exception:
+                pass
+            write_result(result, "ERROR: " + str(error))
+        """;
+
     private readonly string? _configuredPath;
     private readonly ScribusLocator _locator;
+    private readonly ProcessTracker? _tracker;
 
     public EngineKind Kind => EngineKind.Scribus;
 
@@ -75,16 +99,21 @@ public sealed class ScribusConversionEngine : IConversionEngine
     /// An explicit path to Scribus.exe from settings, or null/empty to rely on the
     /// standard install locations only.
     /// </param>
-    public ScribusConversionEngine(string? configuredPath)
-        : this(configuredPath, new ScribusLocator())
+    /// <param name="tracker">
+    /// Optional. When supplied, the Scribus process is registered with it so an
+    /// "Abort now" can stop the process immediately (CLAUDE.md section 3.4).
+    /// </param>
+    public ScribusConversionEngine(string? configuredPath, ProcessTracker? tracker = null)
+        : this(configuredPath, new ScribusLocator(), tracker)
     {
     }
 
     /// <summary>Lets tests supply a locator pointed at temporary folders.</summary>
-    public ScribusConversionEngine(string? configuredPath, ScribusLocator locator)
+    public ScribusConversionEngine(string? configuredPath, ScribusLocator locator, ProcessTracker? tracker = null)
     {
         this._configuredPath = configuredPath;
         this._locator = locator;
+        this._tracker = tracker;
     }
 
     public bool IsAvailable()
@@ -94,16 +123,31 @@ public sealed class ScribusConversionEngine : IConversionEngine
 
     public ConversionOutcome ConvertToPdf(SourceFile source, string outputPdfPath)
     {
+        return this.RunScript(BuildScript(PdfScriptBody), source.FullPath, outputPdfPath);
+    }
+
+    public ConversionOutcome ConvertToSla(SourceFile source, string outputSlaPath)
+    {
+        return this.RunScript(BuildScript(SlaScriptBody), source.FullPath, outputSlaPath);
+    }
+
+    private static string BuildScript(string body)
+    {
+        return ScriptHeader + "\n\n" + body + "\n";
+    }
+
+    private ConversionOutcome RunScript(string scriptText, string inputPath, string finalOutputPath)
+    {
         string? executablePath = this.ResolvedExecutablePath;
         if (executablePath is null)
         {
             return ConversionOutcome.Failed("Scribus was not found (no configured path, and no Scribus folder in Program Files).");
         }
 
-        string? outputFolder = Path.GetDirectoryName(outputPdfPath);
+        string? outputFolder = Path.GetDirectoryName(finalOutputPath);
         if (string.IsNullOrEmpty(outputFolder))
         {
-            return ConversionOutcome.Failed($"Could not determine an output folder for '{outputPdfPath}'.");
+            return ConversionOutcome.Failed($"Could not determine an output folder for '{finalOutputPath}'.");
         }
 
         string workFolder = Path.Combine(Path.GetTempPath(), "AfterPubScribus_" + Guid.NewGuid().ToString("N"));
@@ -114,9 +158,9 @@ public sealed class ScribusConversionEngine : IConversionEngine
             Directory.CreateDirectory(workFolder);
 
             string scriptPath = Path.Combine(workFolder, "convert.py");
-            string tempPdfPath = Path.Combine(workFolder, "output.pdf");
+            string tempOutputPath = Path.Combine(workFolder, "output" + Path.GetExtension(finalOutputPath));
             string resultPath = Path.Combine(workFolder, "result.txt");
-            File.WriteAllText(scriptPath, ScriptText);
+            File.WriteAllText(scriptPath, scriptText);
 
             ProcessStartInfo startInfo = new ProcessStartInfo
             {
@@ -127,50 +171,63 @@ public sealed class ScribusConversionEngine : IConversionEngine
             startInfo.ArgumentList.Add("-g");
             startInfo.ArgumentList.Add("-py");
             startInfo.ArgumentList.Add(scriptPath);
-            startInfo.Environment[InputVariable] = source.FullPath;
-            startInfo.Environment[OutputVariable] = tempPdfPath;
+            startInfo.Environment[InputVariable] = inputPath;
+            startInfo.Environment[OutputVariable] = tempOutputPath;
             startInfo.Environment[ResultVariable] = resultPath;
 
             using Process process = new Process { StartInfo = startInfo };
             process.Start();
 
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            while (!process.HasExited && !File.Exists(resultPath) && stopwatch.Elapsed < ConversionTimeout)
+            this._tracker?.Track(process);
+            try
             {
-                Thread.Sleep(PollIntervalMilliseconds);
-            }
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                while (!process.HasExited && !File.Exists(resultPath) && stopwatch.Elapsed < ConversionTimeout)
+                {
+                    Thread.Sleep(PollIntervalMilliseconds);
+                }
 
-            if (!process.HasExited && !File.Exists(resultPath))
+                if (this._tracker is { AbortRequested: true })
+                {
+                    return ConversionOutcome.Failed(ProcessTracker.AbortedMessage);
+                }
+
+                if (!process.HasExited && !File.Exists(resultPath))
+                {
+                    TryKill(process);
+                    return ConversionOutcome.Failed($"Scribus did not finish within {ConversionTimeout.TotalSeconds:0} seconds and was stopped.");
+                }
+
+                // The script has reported (or Scribus exited). Give it a moment to exit by
+                // itself, then stop it if it is still running.
+                if (!process.HasExited && !process.WaitForExit(ExitGraceMilliseconds))
+                {
+                    TryKill(process);
+                }
+
+                if (!File.Exists(resultPath))
+                {
+                    return ConversionOutcome.Failed($"Scribus exited without reporting a result (exit code {process.ExitCode}).");
+                }
+
+                string result = File.ReadAllText(resultPath).Trim();
+                if (result != "OK")
+                {
+                    return ConversionOutcome.Failed($"Scribus reported: {result}");
+                }
+
+                if (!File.Exists(tempOutputPath))
+                {
+                    return ConversionOutcome.Failed("Scribus reported success, but the output file was not produced.");
+                }
+
+                File.Move(tempOutputPath, finalOutputPath, overwrite: true);
+                return ConversionOutcome.Ok();
+            }
+            finally
             {
-                TryKill(process);
-                return ConversionOutcome.Failed($"Scribus did not finish within {ConversionTimeout.TotalSeconds:0} seconds and was stopped.");
+                this._tracker?.Untrack(process);
             }
-
-            // The script has reported (or Scribus exited). Give it a moment to exit by
-            // itself, then stop it if it is still running.
-            if (!process.HasExited && !process.WaitForExit(ExitGraceMilliseconds))
-            {
-                TryKill(process);
-            }
-
-            if (!File.Exists(resultPath))
-            {
-                return ConversionOutcome.Failed($"Scribus exited without reporting a result (exit code {process.ExitCode}).");
-            }
-
-            string result = File.ReadAllText(resultPath).Trim();
-            if (result != "OK")
-            {
-                return ConversionOutcome.Failed($"Scribus reported: {result}");
-            }
-
-            if (!File.Exists(tempPdfPath))
-            {
-                return ConversionOutcome.Failed("Scribus reported success, but the PDF was not produced.");
-            }
-
-            File.Move(tempPdfPath, outputPdfPath, overwrite: true);
-            return ConversionOutcome.Ok();
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {

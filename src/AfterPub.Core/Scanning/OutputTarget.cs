@@ -12,5 +12,6 @@ public enum OutputTarget
     /// <summary>An editable companion, produced via LibreOffice Draw. File extension: .odg</summary>
     Odg,
 
+    /// <summary>An editable Scribus document, saved directly from the imported .pub. File extension: .sla</summary>
     Sla
 }

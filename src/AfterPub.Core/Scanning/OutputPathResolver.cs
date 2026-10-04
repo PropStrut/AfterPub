@@ -39,6 +39,8 @@ public sealed class OutputPathResolver : IOutputPathResolver
                 return ".pdf";
             case OutputTarget.Odg:
                 return ".odg";
+            case OutputTarget.Sla:
+                return ".sla";
             default:
                 throw new ArgumentOutOfRangeException(nameof(target), target, "Unknown output target.");
         }

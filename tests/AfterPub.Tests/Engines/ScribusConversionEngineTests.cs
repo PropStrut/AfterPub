@@ -30,10 +30,21 @@ public sealed class ScribusConversionEngineTests : IDisposable
     public void ConvertToPdf_NothingInstalled_FailsWithClearMessage()
     {
         ScribusConversionEngine engine = this.CreateEngineWithNoInstall();
-        string sourcePath = Path.Combine(this._tempRoot, "flyer.pub");
-        SourceFile source = new SourceFile(sourcePath, "flyer.pub", 0, DateTime.UtcNow);
+        SourceFile source = this.CreateSource();
 
         ConversionOutcome outcome = engine.ConvertToPdf(source, Path.Combine(this._tempRoot, "flyer.pdf"));
+
+        Assert.False(outcome.Success);
+        Assert.Contains("Scribus was not found", outcome.ErrorMessage);
+    }
+
+    [Fact]
+    public void ConvertToSla_NothingInstalled_FailsWithClearMessage()
+    {
+        ScribusConversionEngine engine = this.CreateEngineWithNoInstall();
+        SourceFile source = this.CreateSource();
+
+        ConversionOutcome outcome = engine.ConvertToSla(source, Path.Combine(this._tempRoot, "flyer.sla"));
 
         Assert.False(outcome.Success);
         Assert.Contains("Scribus was not found", outcome.ErrorMessage);
@@ -45,6 +56,12 @@ public sealed class ScribusConversionEngineTests : IDisposable
         ScribusConversionEngine engine = this.CreateEngineWithNoInstall();
 
         Assert.Equal(EngineKind.Scribus, engine.Kind);
+    }
+
+    private SourceFile CreateSource()
+    {
+        string sourcePath = Path.Combine(this._tempRoot, "flyer.pub");
+        return new SourceFile(sourcePath, "flyer.pub", 0, DateTime.UtcNow);
     }
 
     private ScribusConversionEngine CreateEngineWithNoInstall()

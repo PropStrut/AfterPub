@@ -36,6 +36,7 @@ public sealed class LibreOfficeConversionEngine : IConversionEngine, IPdfToOdgCo
     private const string PdfImportFilter = "draw_pdf_import";
 
     private readonly string? _configuredPath;
+    private readonly ProcessTracker? _tracker;
 
     public EngineKind Kind => EngineKind.LibreOffice;
 
@@ -46,9 +47,14 @@ public sealed class LibreOfficeConversionEngine : IConversionEngine, IPdfToOdgCo
     /// An explicit path to soffice.exe from settings, or null/empty to rely on
     /// standard install locations only.
     /// </param>
-    public LibreOfficeConversionEngine(string? configuredPath)
+    /// <param name="tracker">
+    /// Optional. When supplied, the LibreOffice process is registered with it so an
+    /// "Abort now" can stop the process immediately (CLAUDE.md section 3.4).
+    /// </param>
+    public LibreOfficeConversionEngine(string? configuredPath, ProcessTracker? tracker = null)
     {
         this._configuredPath = configuredPath;
+        this._tracker = tracker;
     }
 
     public bool IsAvailable()
@@ -86,6 +92,10 @@ public sealed class LibreOfficeConversionEngine : IConversionEngine, IPdfToOdgCo
 
         Directory.CreateDirectory(outputFolder);
 
+        // Remembered so an abort can discard a partial output without deleting a good one
+        // that was already there.
+        bool outputExistedBefore = File.Exists(expectedOutputPath);
+
         string profileFolder = Path.Combine(Path.GetTempPath(), "AfterPubLibreOfficeProfile");
         Directory.CreateDirectory(profileFolder);
         string profileUri = new Uri(profileFolder).AbsoluteUri;
@@ -117,8 +127,20 @@ public sealed class LibreOfficeConversionEngine : IConversionEngine, IPdfToOdgCo
         try
         {
             process.Start();
+            this._tracker?.Track(process);
 
             bool exited = process.WaitForExit((int)ConversionTimeout.TotalMilliseconds);
+
+            if (this._tracker is { AbortRequested: true })
+            {
+                if (!outputExistedBefore)
+                {
+                    TryDeleteFile(expectedOutputPath);
+                }
+
+                return ConversionOutcome.Failed(ProcessTracker.AbortedMessage);
+            }
+
             if (!exited)
             {
                 TryKill(process);
@@ -135,10 +157,29 @@ public sealed class LibreOfficeConversionEngine : IConversionEngine, IPdfToOdgCo
         {
             return ConversionOutcome.Failed($"Could not run LibreOffice: {ex.Message}");
         }
+        finally
+        {
+            this._tracker?.Untrack(process);
+        }
 
         return File.Exists(expectedOutputPath)
             ? ConversionOutcome.Ok()
             : ConversionOutcome.Failed("LibreOffice exited without error, but the expected output file was not produced.");
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Best-effort; a leftover partial file is reported by its absence of a result anyway.
+        }
     }
 
     private static void TryKill(Process process)

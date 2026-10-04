@@ -2,6 +2,7 @@ using AfterPub.Core.Conversion;
 using AfterPub.Core.Engines;
 using AfterPub.Core.Scanning;
 using AfterPub.Core.Settings;
+using System.Windows.Forms.VisualStyles;
 
 namespace AfterPub.App;
 
@@ -15,9 +16,19 @@ public class MainForm : Form
     private const string SelectColumnName = "Select";
     private const string PdfStatusColumnName = "PdfStatus";
     private const string OdgStatusColumnName = "OdgStatus";
+    private const string SlaStatusColumnName = "SlaStatus";
+
+    // If one file is still converting after this long, say so in its row: an engine may be
+    // waiting on a dialog (for example a missing-font prompt) that needs the person's attention.
+    private static readonly TimeSpan SlowConversionNoticeDelay = TimeSpan.FromSeconds(10);
+    private const string SlowConversionNotice = "Still working... (an engine may be waiting on a dialog)";
 
     private readonly AppSettingsStore _settingsStore;
     private IReadOnlyList<ConversionRow> _lastScanRows = Array.Empty<ConversionRow>();
+
+    // State of the select-all checkbox drawn in the grid's first column header.
+    private CheckState _headerCheckState = CheckState.Unchecked;
+    private bool _suspendHeaderUpdates;
 
     private readonly TextBox _folderTextBox;
     private readonly Button _browseButton;
@@ -33,6 +44,7 @@ public class MainForm : Form
     private readonly GroupBox _targetsGroup;
     private readonly CheckBox _pdfTargetCheckBox;
     private readonly CheckBox _odgTargetCheckBox;
+    private readonly CheckBox _slaTargetCheckBox;
 
     private readonly GroupBox _engineGroup;
     private readonly RadioButton _autoEngineRadio;
@@ -48,6 +60,13 @@ public class MainForm : Form
     private readonly Label _engineStatusLabel;
 
     private readonly Button _convertButton;
+    private readonly Button _selectNotConvertedButton;
+    private readonly Button _cancelButton;
+    private readonly Button _abortButton;
+
+    // Shared by the engines that run as separate processes, so Abort now can stop them.
+    private readonly ProcessTracker _processTracker = new ProcessTracker();
+    private bool _cancelRequested;
     private readonly Label _overwriteLabel;
     private readonly RadioButton _overwriteAskRadio;
     private readonly RadioButton _overwriteSkipRadio;
@@ -186,14 +205,23 @@ public class MainForm : Form
             Width = 400
         };
 
+        this._slaTargetCheckBox = new CheckBox
+        {
+            Text = "SLA (editable in Scribus — needs Scribus)",
+            Left = 530,
+            Top = 22,
+            Width = 320
+        };
+
         this._targetsGroup.Controls.Add(this._pdfTargetCheckBox);
         this._targetsGroup.Controls.Add(this._odgTargetCheckBox);
+        this._targetsGroup.Controls.Add(this._slaTargetCheckBox);
 
         // --- Row 4: conversion engine ---
 
         this._engineGroup = new GroupBox
         {
-            Text = "Conversion engine",
+            Text = "PDF engine (ODG always uses LibreOffice, SLA always uses Scribus)",
             Left = 10,
             Top = 208,
             Width = 860,
@@ -322,6 +350,38 @@ public class MainForm : Form
         };
         this._convertButton.Click += this.OnConvertSelectedClick;
 
+        this._selectNotConvertedButton = new Button
+        {
+            Text = "Select not converted",
+            Left = 520,
+            Top = 382,
+            Width = 170,
+            Height = 26
+        };
+        this._selectNotConvertedButton.Click += this.OnSelectNotConvertedClick;
+
+        this._cancelButton = new Button
+        {
+            Text = "Cancel",
+            Left = 700,
+            Top = 382,
+            Width = 80,
+            Height = 26,
+            Enabled = false
+        };
+        this._cancelButton.Click += this.OnCancelClick;
+
+        this._abortButton = new Button
+        {
+            Text = "Abort now",
+            Left = 790,
+            Top = 382,
+            Width = 80,
+            Height = 26,
+            Enabled = false
+        };
+        this._abortButton.Click += this.OnAbortClick;
+
         this._overwriteLabel = new Label
         {
             Text = "If output exists:",
@@ -384,6 +444,7 @@ public class MainForm : Form
         this._resultsGrid.Columns.Add("FileName", "File Name");
         this._resultsGrid.Columns.Add(PdfStatusColumnName, "PDF");
         this._resultsGrid.Columns.Add(OdgStatusColumnName, "ODG");
+        this._resultsGrid.Columns.Add(SlaStatusColumnName, "SLA");
 
         foreach (DataGridViewColumn column in this._resultsGrid.Columns)
         {
@@ -394,6 +455,18 @@ public class MainForm : Form
             }
         }
 
+        // Header select-all checkbox: the grid has no built-in one, so it is drawn in the
+        // first column's header and a click on that header toggles every row.
+        this._resultsGrid.CellPainting += this.OnResultsGridCellPainting;
+        this._resultsGrid.ColumnHeaderMouseClick += this.OnResultsGridColumnHeaderMouseClick;
+        this._resultsGrid.CurrentCellDirtyStateChanged += this.OnResultsGridCurrentCellDirtyStateChanged;
+        this._resultsGrid.CellValueChanged += this.OnResultsGridCellValueChanged;
+
+        // The engine radio buttons only matter for the PDF stage (PDF, and the PDF that ODG is
+        // made from). SLA does not use a PDF at all, so SLA-only leaves them greyed out.
+        this._pdfTargetCheckBox.CheckedChanged += this.OnPdfStageTargetsChanged;
+        this._odgTargetCheckBox.CheckedChanged += this.OnPdfStageTargetsChanged;
+
         this.Controls.Add(this._folderTextBox);
         this.Controls.Add(this._browseButton);
         this.Controls.Add(this._recursiveCheckBox);
@@ -402,6 +475,9 @@ public class MainForm : Form
         this.Controls.Add(this._targetsGroup);
         this.Controls.Add(this._engineGroup);
         this.Controls.Add(this._convertButton);
+        this.Controls.Add(this._selectNotConvertedButton);
+        this.Controls.Add(this._cancelButton);
+        this.Controls.Add(this._abortButton);
         this.Controls.Add(this._overwriteLabel);
         this.Controls.Add(this._overwriteAskRadio);
         this.Controls.Add(this._overwriteSkipRadio);
@@ -409,6 +485,7 @@ public class MainForm : Form
         this.Controls.Add(this._resultsGrid);
 
         this.LoadSettingsIntoControls();
+        this.UpdateEngineRadioState();
         this.RefreshEngineStatusLabel();
         this.FormClosing += this.OnFormClosing;
     }
@@ -449,6 +526,7 @@ public class MainForm : Form
 
         this._pdfTargetCheckBox.Checked = settings.EnabledTargets.Contains(OutputTarget.Pdf);
         this._odgTargetCheckBox.Checked = settings.EnabledTargets.Contains(OutputTarget.Odg);
+        this._slaTargetCheckBox.Checked = settings.EnabledTargets.Contains(OutputTarget.Sla);
 
         switch (settings.EngineSelection)
         {
@@ -516,6 +594,11 @@ public class MainForm : Form
             targets.Add(OutputTarget.Odg);
         }
 
+        if (this._slaTargetCheckBox.Checked)
+        {
+            targets.Add(OutputTarget.Sla);
+        }
+
         return targets;
     }
 
@@ -568,6 +651,14 @@ public class MainForm : Form
             ? $"found at {scribusPath}"
             : "not found";
 
+        // SLA is produced by Scribus, so offer it only when Scribus was found.
+        bool scribusFound = scribusEngine.ResolvedExecutablePath is not null;
+        this._slaTargetCheckBox.Enabled = scribusFound;
+        if (!scribusFound)
+        {
+            this._slaTargetCheckBox.Checked = false;
+        }
+
         this._engineStatusLabel.Text =
             $"Detected — Publisher: {publisherStatus}    LibreOffice: {libreOfficeStatus}"
             + Environment.NewLine
@@ -577,13 +668,13 @@ public class MainForm : Form
     private LibreOfficeConversionEngine CreateLibreOfficeEngine()
     {
         string configuredPath = this._libreOfficePathTextBox.Text.Trim();
-        return new LibreOfficeConversionEngine(string.IsNullOrEmpty(configuredPath) ? null : configuredPath);
+        return new LibreOfficeConversionEngine(string.IsNullOrEmpty(configuredPath) ? null : configuredPath, this._processTracker);
     }
 
     private ScribusConversionEngine CreateScribusEngine()
     {
         string configuredPath = this._scribusPathTextBox.Text.Trim();
-        return new ScribusConversionEngine(string.IsNullOrEmpty(configuredPath) ? null : configuredPath);
+        return new ScribusConversionEngine(string.IsNullOrEmpty(configuredPath) ? null : configuredPath, this._processTracker);
     }
 
     private void OnLocationModeChanged(object? sender, EventArgs e)
@@ -676,7 +767,7 @@ public class MainForm : Form
         {
             MessageBox.Show(
                 this,
-                "Choose at least one output target (PDF and/or ODG).",
+                "Choose at least one output target (PDF, ODG and/or SLA).",
                 "AfterPub",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -716,18 +807,201 @@ public class MainForm : Form
 
     private void PopulateGrid(IReadOnlyList<ConversionRow> rows)
     {
+        this._suspendHeaderUpdates = true;
         this._resultsGrid.Rows.Clear();
         foreach (ConversionRow row in rows)
         {
             string pdfStatus = DescribeStatus(row.GetOutput(OutputTarget.Pdf));
             string odgStatus = DescribeStatus(row.GetOutput(OutputTarget.Odg));
+            string slaStatus = DescribeStatus(row.GetOutput(OutputTarget.Sla));
 
-            int rowIndex = this._resultsGrid.Rows.Add(false, row.Source.SourceFolder, row.Source.FileName, pdfStatus, odgStatus);
+            int rowIndex = this._resultsGrid.Rows.Add(false, row.Source.SourceFolder, row.Source.FileName, pdfStatus, odgStatus, slaStatus);
 
             // Fully converted files start unchecked so a routine "select all and
             // convert" doesn't silently re-convert (and overwrite) finished work.
             this._resultsGrid.Rows[rowIndex].Cells[SelectColumnName].Value = false;
         }
+
+        this._suspendHeaderUpdates = false;
+        this.UpdateHeaderCheckState();
+    }
+
+    private void OnPdfStageTargetsChanged(object? sender, EventArgs e)
+    {
+        this.UpdateEngineRadioState();
+    }
+
+    private void UpdateEngineRadioState()
+    {
+        bool needsPdfStage = this._pdfTargetCheckBox.Checked || this._odgTargetCheckBox.Checked;
+
+        this._autoEngineRadio.Enabled = needsPdfStage;
+        this._publisherEngineRadio.Enabled = needsPdfStage;
+        this._libreOfficeEngineRadio.Enabled = needsPdfStage;
+        this._scribusEngineRadio.Enabled = needsPdfStage;
+    }
+
+    // Updates the status cells of the targets currently being converted for one row.
+    private void SetPendingStatus(int rowIndex, IReadOnlyList<OutputTarget> targets, string text)
+    {
+        DataGridViewRow gridRow = this._resultsGrid.Rows[rowIndex];
+
+        if (targets.Contains(OutputTarget.Pdf))
+        {
+            gridRow.Cells[PdfStatusColumnName].Value = text;
+        }
+
+        if (targets.Contains(OutputTarget.Odg))
+        {
+            gridRow.Cells[OdgStatusColumnName].Value = text;
+        }
+
+        if (targets.Contains(OutputTarget.Sla))
+        {
+            gridRow.Cells[SlaStatusColumnName].Value = text;
+        }
+    }
+
+    // --- Cancel and Abort (CLAUDE.md section 3.4) ---
+
+    private void OnCancelClick(object? sender, EventArgs e)
+    {
+        // Finish the file currently converting, then stop. Files not yet started stay
+        // untouched and still show as not converted.
+        this._cancelRequested = true;
+        this._cancelButton.Enabled = false;
+        this._cancelButton.Text = "Cancelling...";
+    }
+
+    private void OnAbortClick(object? sender, EventArgs e)
+    {
+        // Stops the engine process immediately: LibreOffice and Scribus run as processes the
+        // app started, and for Publisher the engine registers only the Publisher process it
+        // started itself, never one the person already had open.
+        this._cancelRequested = true;
+        this._cancelButton.Enabled = false;
+        this._abortButton.Enabled = false;
+        this._processTracker.AbortAll();
+    }
+
+    // --- Selection helpers (select-all header checkbox and "Select not converted") ---
+
+    private void OnSelectNotConvertedClick(object? sender, EventArgs e)
+    {
+        // "Not converted" follows CLAUDE.md section 3.3: a row still needs work when any
+        // target currently ticked in "Output targets" has no output file yet. A target the
+        // last scan did not include counts as missing too.
+        List<OutputTarget> wantedTargets = this.GetSelectedTargets();
+
+        this._resultsGrid.EndEdit();
+        this._suspendHeaderUpdates = true;
+
+        for (int i = 0; i < this._resultsGrid.Rows.Count && i < this._lastScanRows.Count; i++)
+        {
+            ConversionRow row = this._lastScanRows[i];
+            bool needsWork = wantedTargets.Any(target => row.GetOutput(target) is not { Exists: true });
+            this._resultsGrid.Rows[i].Cells[SelectColumnName].Value = needsWork;
+        }
+
+        this._suspendHeaderUpdates = false;
+        this.UpdateHeaderCheckState();
+    }
+
+    private void OnResultsGridColumnHeaderMouseClick(object? sender, DataGridViewCellMouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || e.ColumnIndex != this._resultsGrid.Columns[SelectColumnName]!.Index)
+        {
+            return;
+        }
+
+        // Everything ticked -> clear all; anything else (none or some) -> tick all.
+        this.SetAllRowsChecked(this._headerCheckState != CheckState.Checked);
+    }
+
+    private void SetAllRowsChecked(bool isChecked)
+    {
+        this._resultsGrid.EndEdit();
+        this._suspendHeaderUpdates = true;
+
+        foreach (DataGridViewRow gridRow in this._resultsGrid.Rows)
+        {
+            gridRow.Cells[SelectColumnName].Value = isChecked;
+        }
+
+        this._suspendHeaderUpdates = false;
+        this.UpdateHeaderCheckState();
+    }
+
+    // A checkbox cell only commits its value when it loses focus; commit immediately so
+    // the header checkbox follows each click.
+    private void OnResultsGridCurrentCellDirtyStateChanged(object? sender, EventArgs e)
+    {
+        if (this._resultsGrid.IsCurrentCellDirty)
+        {
+            this._resultsGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        }
+    }
+
+    private void OnResultsGridCellValueChanged(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex >= 0 && e.ColumnIndex == this._resultsGrid.Columns[SelectColumnName]!.Index)
+        {
+            this.UpdateHeaderCheckState();
+        }
+    }
+
+    private void UpdateHeaderCheckState()
+    {
+        if (this._suspendHeaderUpdates)
+        {
+            return;
+        }
+
+        int total = this._resultsGrid.Rows.Count;
+        int ticked = 0;
+        foreach (DataGridViewRow gridRow in this._resultsGrid.Rows)
+        {
+            if (gridRow.Cells[SelectColumnName].Value is true)
+            {
+                ticked++;
+            }
+        }
+
+        CheckState newState = ticked == 0
+            ? CheckState.Unchecked
+            : (ticked == total ? CheckState.Checked : CheckState.Indeterminate);
+
+        if (newState != this._headerCheckState)
+        {
+            this._headerCheckState = newState;
+            this._resultsGrid.InvalidateCell(this._resultsGrid.Columns[SelectColumnName]!.Index, -1);
+        }
+    }
+
+    private void OnResultsGridCellPainting(object? sender, DataGridViewCellPaintingEventArgs e)
+    {
+        if (e.RowIndex != -1 || e.Graphics is null || e.ColumnIndex != this._resultsGrid.Columns[SelectColumnName]!.Index)
+        {
+            return;
+        }
+
+        // Draw the normal header (background, borders), then the checkbox on top of it.
+        e.Paint(e.ClipBounds, DataGridViewPaintParts.All & ~DataGridViewPaintParts.ContentForeground);
+
+        CheckBoxState glyphState = this._headerCheckState switch
+        {
+            CheckState.Checked => CheckBoxState.CheckedNormal,
+            CheckState.Indeterminate => CheckBoxState.MixedNormal,
+            _ => CheckBoxState.UncheckedNormal
+        };
+
+        Size glyphSize = CheckBoxRenderer.GetGlyphSize(e.Graphics, glyphState);
+        Point glyphLocation = new Point(
+            e.CellBounds.X + ((e.CellBounds.Width - glyphSize.Width) / 2),
+            e.CellBounds.Y + ((e.CellBounds.Height - glyphSize.Height) / 2));
+        CheckBoxRenderer.DrawCheckBox(e.Graphics, glyphLocation, glyphState);
+
+        e.Handled = true;
     }
 
     private static string DescribeStatus(OutputInfo? output)
@@ -747,7 +1021,7 @@ public class MainForm : Form
         {
             MessageBox.Show(
                 this,
-                "Choose at least one output target (PDF and/or ODG).",
+                "Choose at least one output target (PDF, ODG and/or SLA).",
                 "AfterPub",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -767,7 +1041,7 @@ public class MainForm : Form
         }
 
         EngineSelection engineSelection = this.GetSelectedEngineSelection();
-        PublisherConversionEngine publisherEngine = new PublisherConversionEngine();
+        PublisherConversionEngine publisherEngine = new PublisherConversionEngine(this._processTracker);
         LibreOfficeConversionEngine libreOfficeEngine = this.CreateLibreOfficeEngine();
         ScribusConversionEngine scribusEngine = this.CreateScribusEngine();
         IConversionEngine? pubToPdfEngine = new EngineResolver().ResolveEngine(
@@ -776,7 +1050,11 @@ public class MainForm : Form
             libreOfficeEngine,
             scribusEngine);
 
-        if (pubToPdfEngine is null)
+        // The PDF engine is only needed when PDF or ODG is wanted. An SLA-only run goes
+        // straight to Scribus and must not fail because the chosen PDF engine is missing.
+        bool needsPdfStage = wantedTargets.Contains(OutputTarget.Pdf) || wantedTargets.Contains(OutputTarget.Odg);
+
+        if (needsPdfStage && pubToPdfEngine is null)
         {
             MessageBox.Show(
                 this,
@@ -789,7 +1067,9 @@ public class MainForm : Form
 
         // ODG is always produced via LibreOffice specifically (CLAUDE.md section 3.2),
         // regardless of which engine is producing the PDF it's generated from.
-        RowConverter rowConverter = new RowConverter(pubToPdfEngine, libreOfficeEngine);
+        // SLA is always produced by Scribus specifically, saved straight from the .pub,
+        // regardless of which engine produces the PDF.
+        RowConverter rowConverter = new RowConverter(pubToPdfEngine, libreOfficeEngine, scribusEngine);
 
         List<(int RowIndex, ConversionRow Row)> conflicts = selected
             .Where(item => wantedTargets.Any(target => item.Row.GetOutput(target) is { Exists: true }))
@@ -834,13 +1114,33 @@ public class MainForm : Form
             return;
         }
 
+        // Publisher is the only engine that preserves everything; LibreOffice and Scribus read
+        // .pub through libmspub, which can silently drop text, so say which engine was used.
+        EngineKind? pdfEngineKind = needsPdfStage ? pubToPdfEngine?.Kind : null;
+        bool usedOpenSourceEngine = pdfEngineKind is not null && pdfEngineKind != EngineKind.Publisher;
+        string pdfSuccessText = usedOpenSourceEngine ? $"Converted ({pdfEngineKind})" : "Converted";
+
         this._scanButton.Enabled = false;
         this._convertButton.Enabled = false;
+
+        // Cancel finishes the file being converted, then stops. Abort now also stops the
+        // engine process immediately (CLAUDE.md section 3.4).
+        this._cancelRequested = false;
+        this._processTracker.Reset();
+        this._cancelButton.Enabled = true;
+        this._abortButton.Enabled = true;
+
         int successCount = 0;
         int failureCount = 0;
+        int processedCount = 0;
 
         foreach ((int rowIndex, ConversionRow row) in toConvert)
         {
+            if (this._cancelRequested)
+            {
+                break;
+            }
+
             if (wantedTargets.Contains(OutputTarget.Pdf))
             {
                 this._resultsGrid.Rows[rowIndex].Cells[PdfStatusColumnName].Value = "Converting...";
@@ -851,13 +1151,25 @@ public class MainForm : Form
                 this._resultsGrid.Rows[rowIndex].Cells[OdgStatusColumnName].Value = "Converting...";
             }
 
-            RowConversionResult result = await Task.Run(() => rowConverter.Convert(row, wantedTargets));
+            if (wantedTargets.Contains(OutputTarget.Sla))
+            {
+                this._resultsGrid.Rows[rowIndex].Cells[SlaStatusColumnName].Value = "Converting...";
+            }
+
+            Task<RowConversionResult> conversionTask = Task.Run(() => rowConverter.Convert(row, wantedTargets));
+            Task firstToFinish = await Task.WhenAny(conversionTask, Task.Delay(SlowConversionNoticeDelay));
+            if (firstToFinish != conversionTask)
+            {
+                this.SetPendingStatus(rowIndex, wantedTargets, SlowConversionNotice);
+            }
+
+            RowConversionResult result = await conversionTask;
 
             ConversionOutcome? pdfOutcome = result.ForTarget(OutputTarget.Pdf);
             if (pdfOutcome is not null)
             {
                 this._resultsGrid.Rows[rowIndex].Cells[PdfStatusColumnName].Value =
-                    pdfOutcome.Success ? "Converted" : $"Failed: {pdfOutcome.ErrorMessage}";
+                    pdfOutcome.Success ? pdfSuccessText : $"Failed: {pdfOutcome.ErrorMessage}";
                 if (pdfOutcome.Success)
                 {
                     successCount++;
@@ -883,16 +1195,61 @@ public class MainForm : Form
                 }
             }
 
+            ConversionOutcome? slaOutcome = result.ForTarget(OutputTarget.Sla);
+            if (slaOutcome is not null)
+            {
+                this._resultsGrid.Rows[rowIndex].Cells[SlaStatusColumnName].Value =
+                    slaOutcome.Success ? "Converted (Scribus)" : $"Failed: {slaOutcome.ErrorMessage}";
+                if (slaOutcome.Success)
+                {
+                    successCount++;
+                }
+                else
+                {
+                    failureCount++;
+                }
+            }
+
             this._resultsGrid.Rows[rowIndex].Cells[SelectColumnName].Value = false;
+            processedCount++;
         }
 
         this._scanButton.Enabled = true;
         this._convertButton.Enabled = true;
+        this._cancelButton.Enabled = false;
+        this._cancelButton.Text = "Cancel";
+        this._abortButton.Enabled = false;
 
         string summary = $"Completed {successCount} conversion(s); {failureCount} failed.";
         if (preSkippedCount > 0)
         {
             summary += $" {preSkippedCount} file(s) skipped (already existed).";
+        }
+
+        if (this._cancelRequested)
+        {
+            int notProcessed = toConvert.Count - processedCount;
+            summary += this._processTracker.AbortRequested ? " Aborted by the user." : " Cancelled by the user.";
+            if (notProcessed > 0)
+            {
+                summary += $" {notProcessed} file(s) were not converted.";
+            }
+        }
+
+        List<string> lossyEngines = new List<string>();
+        if (usedOpenSourceEngine && pdfEngineKind is { } openSourceEngineKind)
+        {
+            lossyEngines.Add(openSourceEngineKind.ToString());
+        }
+
+        if (wantedTargets.Contains(OutputTarget.Sla) && !lossyEngines.Contains("Scribus"))
+        {
+            lossyEngines.Add("Scribus");
+        }
+
+        if (lossyEngines.Count > 0 && successCount > 0)
+        {
+            summary += $" {string.Join(" and ", lossyEngines)} can silently drop text from .pub files, so check the output against the originals.";
         }
 
         MessageBox.Show(
