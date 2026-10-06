@@ -93,4 +93,87 @@ public class AppSettingsStoreTests : IDisposable
 
         Assert.Contains("SeparateFolder", json);
     }
+
+    [Fact]
+    public void Load_DefaultsToLightMode_WhenFileDoesNotExist()
+    {
+        AppSettingsStore store = new AppSettingsStore(this.SettingsFilePath());
+
+        AppSettings settings = store.Load();
+
+        Assert.Equal(AppColorMode.Light, settings.ColorMode);
+    }
+
+    [Fact]
+    public void Load_DefaultsToLightMode_WhenOlderFileHasNoColorMode()
+    {
+        string path = this.SettingsFilePath();
+        File.WriteAllText(path, "{ \"Recursive\": true }");
+        AppSettingsStore store = new AppSettingsStore(path);
+
+        AppSettings settings = store.Load();
+
+        Assert.True(settings.Recursive);
+        Assert.Equal(AppColorMode.Light, settings.ColorMode);
+    }
+
+    [Fact]
+    public void SaveThenLoad_RoundTripsColorMode()
+    {
+        AppSettingsStore store = new AppSettingsStore(this.SettingsFilePath());
+
+        store.Save(new AppSettings { ColorMode = AppColorMode.Dark });
+        AppSettings loaded = store.Load();
+
+        Assert.Equal(AppColorMode.Dark, loaded.ColorMode);
+    }
+
+    [Fact]
+    public void Save_WritesColorModeAsReadableString()
+    {
+        string path = this.SettingsFilePath();
+        AppSettingsStore store = new AppSettingsStore(path);
+
+        store.Save(new AppSettings { ColorMode = AppColorMode.Dark });
+        string json = File.ReadAllText(path);
+
+        Assert.Contains("Dark", json);
+    }
+
+    [Fact]
+    public void Save_DoesNotWriteAnOverwriteSetting()
+    {
+        string path = this.SettingsFilePath();
+        AppSettingsStore store = new AppSettingsStore(path);
+
+        store.Save(new AppSettings());
+        string json = File.ReadAllText(path);
+
+        Assert.DoesNotContain("Overwrite", json);
+    }
+
+    [Fact]
+    public void Load_IgnoresAnOverwriteValueLeftInAnOlderFile()
+    {
+        string path = this.SettingsFilePath();
+        File.WriteAllText(path, "{ \"Recursive\": true, \"OverwriteBehavior\": \"Overwrite\" }");
+        AppSettingsStore store = new AppSettingsStore(path);
+
+        AppSettings settings = store.Load();
+
+        Assert.True(settings.Recursive);
+    }
+
+    [Fact]
+    public void SaveAfterLoad_RemovesAnOverwriteValueLeftInAnOlderFile()
+    {
+        string path = this.SettingsFilePath();
+        File.WriteAllText(path, "{ \"Recursive\": true, \"OverwriteBehavior\": \"Overwrite\" }");
+        AppSettingsStore store = new AppSettingsStore(path);
+
+        store.Save(store.Load());
+        string json = File.ReadAllText(path);
+
+        Assert.DoesNotContain("Overwrite", json);
+    }
 }

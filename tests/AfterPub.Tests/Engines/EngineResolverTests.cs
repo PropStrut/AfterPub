@@ -89,4 +89,69 @@ public class EngineResolverTests
 
         Assert.Same(libreOffice, result);
     }
+
+    [Fact]
+    public void ResolveEngine_Auto_PrefersLibreOfficeOverScribus_WhenPublisherUnavailable()
+    {
+        EngineResolver resolver = new EngineResolver();
+        FakeConversionEngine publisher = new FakeConversionEngine(EngineKind.Publisher, isAvailable: false);
+        FakeConversionEngine libreOffice = new FakeConversionEngine(EngineKind.LibreOffice, isAvailable: true);
+        FakeConversionEngine scribus = new FakeConversionEngine(EngineKind.Scribus, isAvailable: true);
+
+        IConversionEngine? result = resolver.ResolveEngine(EngineSelection.Auto, publisher, libreOffice, scribus);
+
+        Assert.Same(libreOffice, result);
+    }
+
+    [Fact]
+    public void ResolveEngine_Auto_FallsBackToScribus_WhenPublisherAndLibreOfficeUnavailable()
+    {
+        EngineResolver resolver = new EngineResolver();
+        FakeConversionEngine publisher = new FakeConversionEngine(EngineKind.Publisher, isAvailable: false);
+        FakeConversionEngine libreOffice = new FakeConversionEngine(EngineKind.LibreOffice, isAvailable: false);
+        FakeConversionEngine scribus = new FakeConversionEngine(EngineKind.Scribus, isAvailable: true);
+
+        IConversionEngine? result = resolver.ResolveEngine(EngineSelection.Auto, publisher, libreOffice, scribus);
+
+        Assert.Same(scribus, result);
+    }
+
+    [Fact]
+    public void ResolveEngine_Auto_ReturnsNull_WhenNoneOfThreeAvailable()
+    {
+        EngineResolver resolver = new EngineResolver();
+        FakeConversionEngine publisher = new FakeConversionEngine(EngineKind.Publisher, isAvailable: false);
+        FakeConversionEngine libreOffice = new FakeConversionEngine(EngineKind.LibreOffice, isAvailable: false);
+        FakeConversionEngine scribus = new FakeConversionEngine(EngineKind.Scribus, isAvailable: false);
+
+        IConversionEngine? result = resolver.ResolveEngine(EngineSelection.Auto, publisher, libreOffice, scribus);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ResolveEngine_ExplicitScribus_ReturnsScribus_EvenIfOthersAreAvailable()
+    {
+        EngineResolver resolver = new EngineResolver();
+        FakeConversionEngine publisher = new FakeConversionEngine(EngineKind.Publisher, isAvailable: true);
+        FakeConversionEngine libreOffice = new FakeConversionEngine(EngineKind.LibreOffice, isAvailable: true);
+        FakeConversionEngine scribus = new FakeConversionEngine(EngineKind.Scribus, isAvailable: true);
+
+        IConversionEngine? result = resolver.ResolveEngine(EngineSelection.Scribus, publisher, libreOffice, scribus);
+
+        Assert.Same(scribus, result);
+    }
+
+    [Fact]
+    public void ResolveEngine_ExplicitScribus_ReturnsNull_WhenScribusUnavailable_EvenIfOthersAre()
+    {
+        EngineResolver resolver = new EngineResolver();
+        FakeConversionEngine publisher = new FakeConversionEngine(EngineKind.Publisher, isAvailable: true);
+        FakeConversionEngine libreOffice = new FakeConversionEngine(EngineKind.LibreOffice, isAvailable: true);
+        FakeConversionEngine scribus = new FakeConversionEngine(EngineKind.Scribus, isAvailable: false);
+
+        IConversionEngine? result = resolver.ResolveEngine(EngineSelection.Scribus, publisher, libreOffice, scribus);
+
+        Assert.Null(result);
+    }
 }

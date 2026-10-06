@@ -44,10 +44,18 @@ internal sealed class AboutForm : Form
         };
         panel.Controls.Add(title);
         panel.Controls.Add(CreateLabel("Version " + version));
-        panel.Controls.Add(CreateLabel("Migrates Microsoft Publisher (.pub) files to PDF and editable formats."));
-        panel.Controls.Add(CreateLabel("The strong point of this app is to search a directory to find .pub files and show if they have matching derivative files."));
+        panel.Controls.Add(CreateLabel("AfterPub searches a folder for Microsoft Publisher (.pub) files and shows which ones already have matching PDF, ODG and SLA files, so you can see what is still missing."));
+        panel.Controls.Add(CreateLabel("It can also convert Publisher files to PDF and editable formats. PDF results are best with Publisher itself; LibreOffice and Scribus are best-effort, so check their output against the originals."));
         panel.Controls.Add(CreateLabel(copyright));
         panel.Controls.Add(CreateLabel("Licensed under the Apache License, Version 2.0."));
+
+        // Trademark notice: the app works with Publisher files but is not a Microsoft product.
+        Label disclaimer = CreateLabel(
+            "AfterPub is an independent project and is not affiliated with, endorsed by, or sponsored by Microsoft. "
+            + "Microsoft and Publisher are trademarks of the Microsoft group of companies.");
+        disclaimer.ForeColor = SystemColors.GrayText;
+        disclaimer.Margin = new Padding(0, 8, 0, 4);
+        panel.Controls.Add(disclaimer);
 
         if (repoUrl.Length > 0)
         {

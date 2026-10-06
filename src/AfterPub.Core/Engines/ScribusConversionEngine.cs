@@ -154,7 +154,6 @@ public sealed class ScribusConversionEngine : IConversionEngine, IPubToSlaConver
 
         try
         {
-            Directory.CreateDirectory(outputFolder);
             Directory.CreateDirectory(workFolder);
 
             string scriptPath = Path.Combine(workFolder, "convert.py");
@@ -221,7 +220,7 @@ public sealed class ScribusConversionEngine : IConversionEngine, IPubToSlaConver
                     return ConversionOutcome.Failed("Scribus reported success, but the output file was not produced.");
                 }
 
-                File.Move(tempOutputPath, finalOutputPath, overwrite: true);
+                OutputFileMover.MoveIntoPlace(tempOutputPath, finalOutputPath);
                 return ConversionOutcome.Ok();
             }
             finally

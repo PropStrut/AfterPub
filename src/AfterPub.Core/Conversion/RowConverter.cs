@@ -95,22 +95,28 @@ public sealed class RowConverter
             pdfIsScratch = true;
         }
 
-        ConversionOutcome pdfOutcome = this._pubToPdfEngine is null
-            ? ConversionOutcome.Failed("No conversion engine was available for the PDF stage.")
-            : this._pubToPdfEngine.ConvertToPdf(row.Source, pdfPath);
-        if (wantsPdf && !outcomes.ContainsKey(OutputTarget.Pdf))
+        try
         {
-            outcomes[OutputTarget.Pdf] = pdfOutcome;
-        }
+            ConversionOutcome pdfOutcome = this._pubToPdfEngine is null
+                ? ConversionOutcome.Failed("No conversion engine was available for the PDF stage.")
+                : this._pubToPdfEngine.ConvertToPdf(row.Source, pdfPath);
+            if (wantsPdf && !outcomes.ContainsKey(OutputTarget.Pdf))
+            {
+                outcomes[OutputTarget.Pdf] = pdfOutcome;
+            }
 
-        if (wantsOdg)
-        {
-            outcomes[OutputTarget.Odg] = this.ConvertToOdg(row, pdfOutcome, pdfPath);
+            if (wantsOdg)
+            {
+                outcomes[OutputTarget.Odg] = this.ConvertToOdg(row, pdfOutcome, pdfPath);
+            }
         }
-
-        if (pdfIsScratch)
+        finally
         {
-            TryDeleteFile(pdfPath);
+            // The scratch PDF lives in its own temporary folder, which is removed with it.
+            if (pdfIsScratch)
+            {
+                TryDeleteFolder(Path.GetDirectoryName(pdfPath));
+            }
         }
 
         return new RowConversionResult(outcomes);
@@ -155,27 +161,27 @@ public sealed class RowConverter
 
     private static string BuildScratchPdfPath(SourceFile source)
     {
-        string scratchFolder = Path.Combine(Path.GetTempPath(), "AfterPubScratch");
+        // A folder of its own for every conversion, so the scratch PDF can never collide with
+        // another scratch file, and can never be the same file as a real PDF somewhere else.
+        string scratchFolder = Path.Combine(Path.GetTempPath(), "AfterPubScratch", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratchFolder);
 
-        // Named after the source, not a random GUID, so LibreOffice's --convert-to
-        // (which names its output after the input) produces an ODG with the right
-        // base name once it lands in the real output folder.
+        // Named after the source, so the ODG made from it has the right base name.
         return Path.Combine(scratchFolder, source.BaseName + ".pdf");
     }
 
-    private static void TryDeleteFile(string path)
+    private static void TryDeleteFolder(string? folder)
     {
         try
         {
-            if (File.Exists(path))
+            if (!string.IsNullOrEmpty(folder) && Directory.Exists(folder))
             {
-                File.Delete(path);
+                Directory.Delete(folder, true);
             }
         }
         catch
         {
-            // Best-effort; a leftover scratch file in the temp folder is harmless.
+            // Best-effort; a leftover scratch folder in the temp directory is harmless.
         }
     }
 }

@@ -9,6 +9,9 @@ namespace AfterPub.Core.Settings;
 /// now: only what has a real UI wired to it today (CLAUDE.md section 8 lists more
 /// settings, most of which depend on features — quality options, the record file —
 /// that do not exist yet, and are added when those features are).
+///
+/// The overwrite choice (Ask / Skip / Overwrite) is deliberately NOT here: it is not saved, and
+/// every start of the app begins with Ask.
 /// </summary>
 public sealed class AppSettings
 {
@@ -36,11 +39,16 @@ public sealed class AppSettings
     /// </summary>
     public string? ScribusPath { get; set; }
 
-    /// <summary>What to do when converting a file whose output already exists.</summary>
-    public OverwriteBehavior OverwriteBehavior { get; set; } = OverwriteBehavior.Ask;
-
     /// <summary>
     /// Which output types to scan for and produce. PDF-only by default; ODG needs
     /// LibreOffice and SLA needs Scribus, so both are off by default (CLAUDE.md section 3.2).
+    /// These are the "Convert to" targets; a scan always reports every output type.
+    /// </summary>
     public List<OutputTarget> EnabledTargets { get; set; } = new List<OutputTarget> { OutputTarget.Pdf };
+
+    /// <summary>
+    /// Light or dark appearance. Read once at startup, so a change applies after the app is
+    /// restarted. Older settings files without this value open in light mode.
+    /// </summary>
+    public AppColorMode ColorMode { get; set; } = AppColorMode.Light;
 }

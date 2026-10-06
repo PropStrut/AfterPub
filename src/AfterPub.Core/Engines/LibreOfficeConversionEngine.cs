@@ -9,6 +9,8 @@ namespace AfterPub.Core.Engines;
 /// then standard install locations. Runs with its own profile folder so it does not
 /// collide with a copy of LibreOffice the user already has open, and enforces a
 /// timeout so a stuck process cannot hang a batch indefinitely.
+/// Output goes to a private temporary folder and is moved into place only on success, so a
+/// failed or stopped conversion never leaves a partial file or damages an existing one.
 ///
 /// Implements two capabilities that both go through the same headless process:
 /// <see cref="IConversionEngine"/> for .pub -&gt; PDF, and
@@ -84,101 +86,120 @@ public sealed class LibreOfficeConversionEngine : IConversionEngine, IPdfToOdgCo
             return ConversionOutcome.Failed("LibreOffice was not found (no configured path, and none of the standard install locations exist).");
         }
 
-        string? outputFolder = Path.GetDirectoryName(expectedOutputPath);
-        if (string.IsNullOrEmpty(outputFolder))
+        if (string.IsNullOrEmpty(Path.GetDirectoryName(expectedOutputPath)))
         {
             return ConversionOutcome.Failed($"Could not determine an output folder for '{expectedOutputPath}'.");
         }
 
-        Directory.CreateDirectory(outputFolder);
-
-        // Remembered so an abort can discard a partial output without deleting a good one
-        // that was already there.
-        bool outputExistedBefore = File.Exists(expectedOutputPath);
-
-        string profileFolder = Path.Combine(Path.GetTempPath(), "AfterPubLibreOfficeProfile");
-        Directory.CreateDirectory(profileFolder);
-        string profileUri = new Uri(profileFolder).AbsoluteUri;
-
-        ProcessStartInfo startInfo = new ProcessStartInfo
-        {
-            FileName = executablePath,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        startInfo.ArgumentList.Add("--headless");
-        startInfo.ArgumentList.Add($"-env:UserInstallation={profileUri}");
-
-        if (!string.IsNullOrEmpty(inFilter))
-        {
-            startInfo.ArgumentList.Add($"--infilter={inFilter}");
-        }
-
-        startInfo.ArgumentList.Add("--convert-to");
-        startInfo.ArgumentList.Add(convertToArgument);
-        startInfo.ArgumentList.Add("--outdir");
-        startInfo.ArgumentList.Add(outputFolder);
-        startInfo.ArgumentList.Add(inputFilePath);
-
-        using Process process = new Process { StartInfo = startInfo };
+        // LibreOffice writes into a private temporary folder, never into the real output folder:
+        // a conversion that fails or is stopped part-way can then never leave a partial file, or
+        // damage a good file that is already there. Only a finished file is moved into place.
+        string workFolder = Path.Combine(Path.GetTempPath(), "AfterPubLibreOffice_" + Guid.NewGuid().ToString("N"));
 
         try
         {
-            process.Start();
-            this._tracker?.Track(process);
+            Directory.CreateDirectory(workFolder);
 
-            bool exited = process.WaitForExit((int)ConversionTimeout.TotalMilliseconds);
+            // --convert-to names its output after the input file, with the new extension.
+            string producedPath = Path.Combine(
+                workFolder,
+                Path.GetFileNameWithoutExtension(inputFilePath) + Path.GetExtension(expectedOutputPath));
 
-            if (this._tracker is { AbortRequested: true })
+            string profileFolder = Path.Combine(Path.GetTempPath(), "AfterPubLibreOfficeProfile");
+            Directory.CreateDirectory(profileFolder);
+            string profileUri = new Uri(profileFolder).AbsoluteUri;
+
+            ProcessStartInfo startInfo = new ProcessStartInfo
             {
-                if (!outputExistedBefore)
+                FileName = executablePath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            startInfo.ArgumentList.Add("--headless");
+            startInfo.ArgumentList.Add($"-env:UserInstallation={profileUri}");
+
+            if (!string.IsNullOrEmpty(inFilter))
+            {
+                startInfo.ArgumentList.Add($"--infilter={inFilter}");
+            }
+
+            startInfo.ArgumentList.Add("--convert-to");
+            startInfo.ArgumentList.Add(convertToArgument);
+            startInfo.ArgumentList.Add("--outdir");
+            startInfo.ArgumentList.Add(workFolder);
+            startInfo.ArgumentList.Add(inputFilePath);
+
+            using Process process = new Process { StartInfo = startInfo };
+
+            try
+            {
+                process.Start();
+                this._tracker?.Track(process);
+
+                bool exited = process.WaitForExit((int)ConversionTimeout.TotalMilliseconds);
+
+                if (this._tracker is { AbortRequested: true })
                 {
-                    TryDeleteFile(expectedOutputPath);
+                    return ConversionOutcome.Failed(ProcessTracker.AbortedMessage);
                 }
 
-                return ConversionOutcome.Failed(ProcessTracker.AbortedMessage);
+                if (!exited)
+                {
+                    TryKill(process);
+                    return ConversionOutcome.Failed($"LibreOffice did not finish within {ConversionTimeout.TotalSeconds:0} seconds and was stopped.");
+                }
+
+                if (process.ExitCode != 0)
+                {
+                    string stderr = process.StandardError.ReadToEnd();
+                    return ConversionOutcome.Failed($"LibreOffice exited with code {process.ExitCode}: {stderr}");
+                }
+            }
+            finally
+            {
+                this._tracker?.Untrack(process);
             }
 
-            if (!exited)
+            if (!File.Exists(producedPath))
             {
-                TryKill(process);
-                return ConversionOutcome.Failed($"LibreOffice did not finish within {ConversionTimeout.TotalSeconds:0} seconds and was stopped.");
+                return ConversionOutcome.Failed("LibreOffice exited without error, but the expected output file was not produced.");
             }
 
-            if (process.ExitCode != 0)
+            try
             {
-                string stderr = process.StandardError.ReadToEnd();
-                return ConversionOutcome.Failed($"LibreOffice exited with code {process.ExitCode}: {stderr}");
+                OutputFileMover.MoveIntoPlace(producedPath, expectedOutputPath);
             }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return ConversionOutcome.Failed($"LibreOffice finished, but the result could not be saved to '{expectedOutputPath}': {ex.Message}");
+            }
+
+            return ConversionOutcome.Ok();
         }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {
             return ConversionOutcome.Failed($"Could not run LibreOffice: {ex.Message}");
         }
         finally
         {
-            this._tracker?.Untrack(process);
+            TryDeleteFolder(workFolder);
         }
-
-        return File.Exists(expectedOutputPath)
-            ? ConversionOutcome.Ok()
-            : ConversionOutcome.Failed("LibreOffice exited without error, but the expected output file was not produced.");
     }
 
-    private static void TryDeleteFile(string path)
+    private static void TryDeleteFolder(string folder)
     {
         try
         {
-            if (File.Exists(path))
+            if (Directory.Exists(folder))
             {
-                File.Delete(path);
+                Directory.Delete(folder, true);
             }
         }
         catch
         {
-            // Best-effort; a leftover partial file is reported by its absence of a result anyway.
+            // A leftover temp folder is harmless; never let cleanup fail a conversion.
         }
     }
 

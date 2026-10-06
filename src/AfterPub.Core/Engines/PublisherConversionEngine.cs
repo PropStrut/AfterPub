@@ -24,6 +24,9 @@ namespace AfterPub.Core.Engines;
 /// own, and the user may have it open with their own documents. So the app only ever
 /// stops, hides or quits a Publisher process that appeared while this engine was starting
 /// its own instance. A Publisher that was already running is never killed, hidden or quit.
+///
+/// The PDF is exported into a private temporary folder and moved to its final place only on
+/// success, so a failed, timed-out or aborted conversion never leaves a partial file.
 /// </summary>
 public sealed class PublisherConversionEngine : IConversionEngine
 {
@@ -43,6 +46,14 @@ public sealed class PublisherConversionEngine : IConversionEngine
 
     private const int UnwindMilliseconds = 5000;
 
+    /// <summary>
+    /// How many files in a row may time out before this engine gives up. Three minutes per file
+    /// adds up quickly across hundreds of files, and several timeouts in a row almost always mean
+    /// Publisher itself is stuck (for example on a license or sign-in dialog), not that three
+    /// documents are bad.
+    /// </summary>
+    public const int MaxConsecutiveTimeouts = 3;
+
     private const BindingFlags InvokeMethodFlags =
         BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance;
 
@@ -53,6 +64,10 @@ public sealed class PublisherConversionEngine : IConversionEngine
         BindingFlags.SetProperty | BindingFlags.Public | BindingFlags.Instance;
 
     private readonly ProcessTracker? _tracker;
+
+    // Files in a row that hit the timeout. Any file that finishes (successfully or with an ordinary
+    // error) resets it, because that shows Publisher is responding.
+    private int _consecutiveTimeouts;
 
     public EngineKind Kind => EngineKind.Publisher;
 
@@ -65,6 +80,12 @@ public sealed class PublisherConversionEngine : IConversionEngine
         this._tracker = tracker;
     }
 
+    /// <summary>
+    /// True once <see cref="MaxConsecutiveTimeouts"/> files in a row have timed out. The caller
+    /// should stop sending files to this engine and tell the person; further calls fail at once.
+    /// </summary>
+    public bool HasTimedOutRepeatedly => Volatile.Read(ref this._consecutiveTimeouts) >= MaxConsecutiveTimeouts;
+
     public bool IsAvailable()
     {
         return Type.GetTypeFromProgID(ProgId) is not null;
@@ -72,6 +93,34 @@ public sealed class PublisherConversionEngine : IConversionEngine
 
     public ConversionOutcome ConvertToPdf(SourceFile source, string outputPdfPath)
     {
+        // Publisher exports into a private temporary folder, and the finished PDF is moved to its
+        // final place only on success. A failed, timed-out or aborted conversion therefore never
+        // leaves a partial PDF, and a good PDF that is already there is replaced only at the end.
+        string workFolder = Path.Combine(Path.GetTempPath(), "AfterPubPublisher_" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            Directory.CreateDirectory(workFolder);
+            return this.ConvertToPdfCore(source, outputPdfPath, Path.Combine(workFolder, "output.pdf"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return ConversionOutcome.Failed($"Could not prepare a temporary folder for Publisher: {ex.Message}");
+        }
+        finally
+        {
+            TryDeleteFolder(workFolder);
+        }
+    }
+
+    private ConversionOutcome ConvertToPdfCore(SourceFile source, string outputPdfPath, string tempPdfPath)
+    {
+        if (this.HasTimedOutRepeatedly)
+        {
+            return ConversionOutcome.Failed(
+                $"Not tried: Publisher timed out on {MaxConsecutiveTimeouts} files in a row, so it is not being used any more in this run.");
+        }
+
         Type? publisherType = Type.GetTypeFromProgID(ProgId);
         if (publisherType is null)
         {
@@ -82,15 +131,17 @@ public sealed class PublisherConversionEngine : IConversionEngine
         // exactly which ones are ours.
         HashSet<int> processesBefore = GetPublisherProcessIds();
         HashSet<int> ownedProcessIds = new HashSet<int>();
-        bool outputExistedBefore = File.Exists(outputPdfPath);
 
         // The COM calls run on a worker so a stuck one (a dialog nobody can see) can be
         // timed out instead of hanging the whole batch.
         Task<ConversionOutcome> work = Task.Run(
-            () => this.RunConversion(publisherType, source, outputPdfPath, processesBefore, ownedProcessIds));
+            () => this.RunConversion(publisherType, source, outputPdfPath, tempPdfPath, processesBefore, ownedProcessIds));
 
         if (work.Wait(ConversionTimeout))
         {
+            // Publisher answered within the time limit, so it is responding.
+            Interlocked.Exchange(ref this._consecutiveTimeouts, 0);
+
             try
             {
                 return work.Result;
@@ -101,6 +152,7 @@ public sealed class PublisherConversionEngine : IConversionEngine
             }
         }
 
+        Interlocked.Increment(ref this._consecutiveTimeouts);
         bool stopped = KillOwnedProcesses(ownedProcessIds);
 
         // Killing the process makes the stuck COM call fail, which lets the worker unwind.
@@ -113,11 +165,6 @@ public sealed class PublisherConversionEngine : IConversionEngine
             // The worker's own failure no longer matters; the timeout is what gets reported.
         }
 
-        if (!outputExistedBefore)
-        {
-            TryDeleteFile(outputPdfPath);
-        }
-
         string minutes = ConversionTimeout.TotalMinutes.ToString("0");
         return stopped
             ? ConversionOutcome.Failed($"Publisher did not finish within {minutes} minutes and was stopped.")
@@ -128,6 +175,7 @@ public sealed class PublisherConversionEngine : IConversionEngine
         Type publisherType,
         SourceFile source,
         string outputPdfPath,
+        string tempPdfPath,
         HashSet<int> processesBefore,
         HashSet<int> ownedProcessIds)
     {
@@ -135,7 +183,6 @@ public sealed class PublisherConversionEngine : IConversionEngine
         object? document = null;
         List<Process> trackedProcesses = new List<Process>();
         bool startedByUs = false;
-        bool outputExistedBefore = File.Exists(outputPdfPath);
         string stage = "starting Publisher";
 
         try
@@ -167,22 +214,28 @@ public sealed class PublisherConversionEngine : IConversionEngine
                 TryHideActiveWindow(application);
             }
 
-            string? outputFolder = Path.GetDirectoryName(outputPdfPath);
-            if (!string.IsNullOrEmpty(outputFolder))
-            {
-                Directory.CreateDirectory(outputFolder);
-            }
-
             stage = "exporting to PDF";
-            CallMethod(document, "ExportAsFixedFormat", PbFixedFormatTypePdf, outputPdfPath);
+            CallMethod(document, "ExportAsFixedFormat", PbFixedFormatTypePdf, tempPdfPath);
 
             stage = "closing the document";
             CallMethod(document, "Close");
             document = null;
 
-            return File.Exists(outputPdfPath)
-                ? ConversionOutcome.Ok()
-                : ConversionOutcome.Failed("Publisher did not report an error, but no PDF was produced.");
+            if (!File.Exists(tempPdfPath))
+            {
+                return ConversionOutcome.Failed("Publisher did not report an error, but no PDF was produced.");
+            }
+
+            try
+            {
+                OutputFileMover.MoveIntoPlace(tempPdfPath, outputPdfPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return ConversionOutcome.Failed($"Publisher finished, but the PDF could not be saved to '{outputPdfPath}': {ex.Message}");
+            }
+
+            return ConversionOutcome.Ok();
         }
         catch (Exception ex) when (ex is COMException or TargetInvocationException or MissingMemberException)
         {
@@ -190,11 +243,6 @@ public sealed class PublisherConversionEngine : IConversionEngine
             // "RPC server unavailable" style error. Report that as a stop, not a Publisher failure.
             if (this._tracker is { AbortRequested: true })
             {
-                if (!outputExistedBefore)
-                {
-                    TryDeleteFile(outputPdfPath);
-                }
-
                 return ConversionOutcome.Failed(ProcessTracker.AbortedMessage);
             }
 
@@ -316,18 +364,18 @@ public sealed class PublisherConversionEngine : IConversionEngine
         return stoppedAny;
     }
 
-    private static void TryDeleteFile(string path)
+    private static void TryDeleteFolder(string folder)
     {
         try
         {
-            if (File.Exists(path))
+            if (Directory.Exists(folder))
             {
-                File.Delete(path);
+                Directory.Delete(folder, true);
             }
         }
         catch
         {
-            // Best-effort; a leftover partial file is harmless next to the failure being reported.
+            // A leftover temp folder is harmless; never let cleanup fail a conversion.
         }
     }
 
