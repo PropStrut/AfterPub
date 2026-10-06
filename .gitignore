@@ -494,3 +494,5 @@ $RECYCLE.BIN/
 
 # Local settings written next to the exe
 afterpub.settings.json
+
+artifacts/
