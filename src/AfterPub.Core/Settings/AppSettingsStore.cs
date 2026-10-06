@@ -48,23 +48,37 @@ public sealed class AppSettingsStore
             AppSettings? settings = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions);
             return settings ?? new AppSettings();
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            // Corrupt or hand-edited settings file: fall back to defaults rather than crash.
+            // Corrupt, hand-edited, locked or unreadable settings file: fall back to defaults
+            // rather than crash.
             return new AppSettings();
         }
     }
 
-    /// <summary>Writes <paramref name="settings"/> to <see cref="FilePath"/>, creating its folder if needed.</summary>
-    public void Save(AppSettings settings)
+    /// <summary>
+    /// Writes <paramref name="settings"/> to <see cref="FilePath"/>, creating its folder if needed.
+    /// Returns false (never throws) if the file cannot be written, for example because the
+    /// program sits in a read-only folder such as Program Files, so the caller can tell the
+    /// person instead of crashing.
+    /// </summary>
+    public bool Save(AppSettings settings)
     {
-        string? folder = Path.GetDirectoryName(this.FilePath);
-        if (!string.IsNullOrEmpty(folder))
+        try
         {
-            Directory.CreateDirectory(folder);
-        }
+            string? folder = Path.GetDirectoryName(this.FilePath);
+            if (!string.IsNullOrEmpty(folder))
+            {
+                Directory.CreateDirectory(folder);
+            }
 
-        string json = JsonSerializer.Serialize(settings, SerializerOptions);
-        File.WriteAllText(this.FilePath, json);
+            string json = JsonSerializer.Serialize(settings, SerializerOptions);
+            File.WriteAllText(this.FilePath, json);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
     }
 }

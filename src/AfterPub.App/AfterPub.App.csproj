@@ -10,6 +10,13 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>AfterPub</AssemblyName>
+  </PropertyGroup>
+
+  <!-- Publish settings. The COM late binding in the Publisher engine can break under trimming. -->
+  <PropertyGroup>
+    <PublishTrimmed>false</PublishTrimmed>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
   </PropertyGroup>
 
 </Project>

@@ -776,8 +776,17 @@ public class MainForm : Form
             return;
         }
 
+        AppColorMode previousColorMode = this._colorMode;
         this._colorMode = this._colorMode == AppColorMode.Dark ? AppColorMode.Light : AppColorMode.Dark;
-        this._settingsStore.Save(this.BuildSettingsFromControls());
+        if (!this._settingsStore.Save(this.BuildSettingsFromControls()))
+        {
+            // The choice only takes effect through the settings file, so without a saved
+            // file there is nothing to restart into. Keep the current mode and say why.
+            this._colorMode = previousColorMode;
+            this.ShowSettingsNotSavedMessage("The light/dark mode was not changed.");
+            return;
+        }
+
         this.UpdateTitle();
 
         string modeName = this._colorMode == AppColorMode.Dark ? "dark" : "light";
@@ -874,7 +883,26 @@ public class MainForm : Form
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
         this._scanCancellation?.Cancel();
-        this._settingsStore.Save(this.BuildSettingsFromControls());
+
+        bool saved = this._settingsStore.Save(this.BuildSettingsFromControls());
+        if (!saved && e.CloseReason == CloseReason.UserClosing)
+        {
+            this.ShowSettingsNotSavedMessage(
+                "Your choices will not be remembered next time. To keep them, move AfterPub.exe to a folder you can write to.");
+        }
+    }
+
+    // Shown when the settings file cannot be written (for example, the program sits in a
+    // read-only folder such as Program Files). The app keeps working; only remembering stops.
+    private void ShowSettingsNotSavedMessage(string consequence)
+    {
+        string folder = Path.GetDirectoryName(this._settingsStore.FilePath) ?? this._settingsStore.FilePath;
+        MessageBox.Show(
+            this,
+            $"AfterPub cannot save its settings because it is not allowed to write to this folder:\n\n{folder}\n\n{consequence}",
+            "AfterPub",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
     }
 
     // Everything the settings file holds, taken from the current state of the window. The color

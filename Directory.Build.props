@@ -8,7 +8,13 @@
     <Copyright>Copyright 2026 Brian Reed</Copyright>
     <RepositoryUrl>https://github.com/PropStrut/AfterPub</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <Version>0.1.0</Version>
+    <Version>1.0.0-rc.1</Version>
+  </PropertyGroup>
+
+  <!-- Release builds ship no debug symbols (applies to every project). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
   <!-- Exposes the repo URL at runtime so the About box has one source of truth. -->

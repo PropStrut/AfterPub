@@ -12,7 +12,7 @@ files, AfterPub helps you get them out before the program is gone.
 
 > **Status:** Windows 10 and 11 (x64). Linux and macOS are planned for version 2.
 
-<!-- Add a screenshot of the main window here. -->
+![AfterPub main window](docs/AfterPub-screenshot1.jpg)
 
 ## What it does
 
@@ -89,10 +89,25 @@ Settings are saved in `afterpub.settings.json` next to the program.
 
 ## Install
 
-<!-- Fill in after the portable build is published: where to download it, and that it is a single
-     self-contained .exe that needs no installer and no .NET installation. -->
+AfterPub is a portable Windows program: a single file, with no installer and no need to install .NET.
+It needs Windows 10 or 11 (64-bit).
 
-AfterPub is a portable Windows program. There is no installer.
+1. Download the latest `.zip` from the [Releases page](https://github.com/PropStrut/AfterPub/releases).
+2. Unzip it and put `AfterPub.exe` in a folder you can write to, such as a folder in your Documents.
+   Do not put it in `Program Files`: AfterPub keeps its settings in a file next to the program, and
+   Windows does not let ordinary programs save files there.
+3. Double-click `AfterPub.exe`.
+
+Scanning needs nothing else. Publisher, LibreOffice or Scribus are only needed when you want to convert.
+
+**Windows may warn you the first time.** AfterPub is not code-signed yet, so Windows SmartScreen may
+show "Windows protected your PC". Choose **More info**, then **Run anyway**. Some antivirus programs may
+also flag a new, unsigned program. Each release lists a SHA-256 checksum for the download, so you can
+check that your copy is the real one:
+
+```
+Get-FileHash <path to the downloaded file> -Algorithm SHA256
+```
 
 ## Building from source
 
