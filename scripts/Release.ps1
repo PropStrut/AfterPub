@@ -172,7 +172,33 @@ try
     $publishDir = Join-Path $artifacts 'publish'
     if (Test-Path -LiteralPath $publishDir)
     {
-        Remove-Item -LiteralPath $publishDir -Recurse -Force
+        if (@(Get-Process -Name 'AfterPub' -ErrorAction SilentlyContinue).Count -gt 0)
+        {
+            throw 'AfterPub.exe is still running. Close it, then run this script again.'
+        }
+
+        # Antivirus can hold a freshly built exe for a few seconds, so try a few times.
+        [bool]$removed = $false
+        for ([int]$attempt = 1; $attempt -le 3 -and -not $removed; $attempt++)
+        {
+            try
+            {
+                Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction Stop
+                $removed = $true
+            }
+            catch
+            {
+                if ($attempt -lt 3)
+                {
+                    Start-Sleep -Seconds 2
+                }
+            }
+        }
+
+        if (-not $removed)
+        {
+            throw "Could not delete $publishDir because something is using it. Close any File Explorer window or terminal that is inside that folder (a terminal in it needs a 'cd' out of it), then run this script again."
+        }
     }
 
     New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
@@ -209,7 +235,14 @@ try
     $zipPath = Join-Path $artifacts $zipName
     if (Test-Path -LiteralPath $zipPath)
     {
-        Remove-Item -LiteralPath $zipPath -Force
+        try
+        {
+            Remove-Item -LiteralPath $zipPath -Force -ErrorAction Stop
+        }
+        catch
+        {
+            throw "Could not delete the old package $zipPath. Close anything that has it open (File Explorer preview, a zip tool), then run this script again."
+        }
     }
 
     Compress-Archive -LiteralPath $exe -DestinationPath $zipPath
